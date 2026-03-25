@@ -22,13 +22,20 @@ def setup_startup():
     # sys.executable points to the .exe or .app binary when compiled
     app_path = os.path.realpath(sys.executable)
     
+    if getattr(sys, 'frozen', False):
+        exec_args_mac = f'<string>{os.path.realpath(sys.executable)}</string>'
+        exec_cmd = os.path.realpath(sys.executable)
+    else:
+        exec_args_mac = f'<string>{sys.executable}</string>\n            <string>{os.path.realpath(__file__)}</string>'
+        exec_cmd = f'"{sys.executable}" "{os.path.realpath(__file__)}"'
+        
     if sys.platform == "win32":
         import winreg
         key = winreg.HKEY_CURRENT_USER
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         try:
             with winreg.OpenKey(key, key_path, 0, winreg.KEY_ALL_ACCESS) as reg_key:
-                winreg.SetValueEx(reg_key, "AIVoiceTranscriber", 0, winreg.REG_SZ, app_path)
+                winreg.SetValueEx(reg_key, "AIVoiceTranscriber", 0, winreg.REG_SZ, exec_cmd)
         except Exception as e:
             print(f"Startup failed: {e}")
 
@@ -38,11 +45,35 @@ def setup_startup():
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0"><dict>
             <key>Label</key><string>com.ai.transcriber</string>
-            <key>ProgramArguments</key><array><string>{app_path}</string></array>
+            <key>ProgramArguments</key><array>
+                {exec_args_mac}
+            </array>
             <key>RunAtLoad</key><true/>
         </dict></plist>"""
-        with open(plist_path, "w") as f:
-            f.write(plist_content)
+        try:
+            with open(plist_path, "w") as f:
+                f.write(plist_content)
+        except Exception as e:
+            print(f"Startup setup failed: {e}")
+
+    elif sys.platform.startswith("linux"):
+        autostart_dir = os.path.expanduser("~/.config/autostart")
+        os.makedirs(autostart_dir, exist_ok=True)
+        desktop_file_path = os.path.join(autostart_dir, "ai-transcriber.desktop")
+        desktop_content = f"""[Desktop Entry]
+Type=Application
+Exec={exec_cmd}
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+Name=AIVoiceTranscriber
+Comment=AI Voice Transcriber
+"""
+        try:
+            with open(desktop_file_path, "w") as f:
+                f.write(desktop_content)
+        except Exception as e:
+            print(f"Startup setup failed: {e}")
 
 # --- Configuration ---
 HOTKEY = 'f8'
@@ -177,7 +208,11 @@ def normalize_audio(input_file, output_file):
         # We only use a light normalization to ensure it is loud enough, but no aggressive 
         # noise gating or EQ cutting. Neural network models like Whisper need raw audio
         # data to properly differentiate between human speech and background artifacts.
-        ffmpeg_path = os.path.join(os.getcwd(), "ffmpeg.exe")
+        if sys.platform == "win32":
+            ffmpeg_path = os.path.join(os.getcwd(), "ffmpeg.exe")
+        else:
+            ffmpeg_path = "ffmpeg"
+        
         cmd = [
             ffmpeg_path,
             "-y",
@@ -222,7 +257,8 @@ def transcribe_audio(audio_file):
             
             # Auto-type it!
             write_text(final_text + " ")
-            winsound.Beep(1200, 50)  # Quick success beep
+            if winsound:
+                winsound.Beep(1200, 50)  # Quick success beep
         else:
             print("[STT] No coherent text found.")
             
