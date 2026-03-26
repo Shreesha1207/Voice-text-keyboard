@@ -242,7 +242,7 @@ def transcribe_audio(audio_file):
             # trained to handle noisy environments drastically better than aggressive gating.
             # Strictly enforce English output to prevent hallucinations into other languages.
             transcription = client.audio.transcriptions.create(
-                model="gpt-4o-transcribe", 
+                model="gpt-4o-transcribe",
                 file=audio,
                 language="en"
             )
