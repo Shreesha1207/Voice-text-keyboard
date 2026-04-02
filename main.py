@@ -159,11 +159,20 @@ def record_audio(output_filename):
         winsound.Beep(1000, 100)  # High pitch beep to signal start
     print(f"[Recording] Listening... Release '{HOTKEY}' when done.")
     
-    stream = audio.open(format=FORMAT,
-                        channels=CHANNELS,
-                        rate=RATE,
-                        input=True,
-                        frames_per_buffer=CHUNK)
+    try:
+        stream = audio.open(format=FORMAT,
+                            channels=CHANNELS,
+                            rate=RATE,
+                            input=True,
+                            frames_per_buffer=CHUNK)
+    except Exception as e:
+        print(f"\n[Microphone Error] Could not access microphone: {e}")
+        print("Please ensure your Terminal/App has Microphone permissions in System Settings.")
+        audio.terminate()
+        # Wait for user to release hotkey before continuing, so we don't spam errors
+        while is_pressed(HOTKEY):
+            time.sleep(0.1)
+        return False
     
     frames = []
 

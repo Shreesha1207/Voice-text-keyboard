@@ -74,20 +74,42 @@ if [ $? -ne 0 ]; then
 fi
 
 echo
-echo "[3/3] Launching the script now in the background..."
-# Run python in background
+echo "[3/3] Triggering Microphone Permissions..."
+echo "If prompted, please click 'Allow' so the AI can hear you."
+echo "Waiting for microphone access..."
+
+# Run a quick python snippet just to trigger the Apple/OS microphone permission prompt.
+# TCC (privacy framework) will pause this script until the user clicks Allow/Deny.
 if command -v python3 &> /dev/null; then
-    nohup python3 main.py >/dev/null 2>&1 &
+    PY_BIN="python3"
 else
-    nohup python main.py >/dev/null 2>&1 &
+    PY_BIN="python"
 fi
+
+$PY_BIN -c "
+import pyaudio
+import sys
+p = pyaudio.PyAudio()
+try:
+    stream = p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1024)
+    stream.close()
+except Exception as e:
+    pass
+finally:
+    p.terminate()
+"
+
+echo
+echo "Permissions processed. Launching the script now in the background..."
+# Run python invisibly in background (restoring the discreet nature)
+nohup $PY_BIN main.py >/dev/null 2>&1 &
 
 echo
 echo "=========================================="
 echo "  SUCCESS!"
 echo "=========================================="
-echo "The script is now running invisibly in the background."
-echo "You can use the F8 hotkey anywhere."
+echo "The system is now running invisibly in the background."
+echo "You can use the F8 hotkey anywhere to talk."
 echo
 echo "You can manually configure this script to run on startup based on your OS."
 echo
