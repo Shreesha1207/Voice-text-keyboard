@@ -1,0 +1,7 @@
+__pycache__/
+venv/
+*.pyc
+.env
+temp_audio/
+test_results.txt
+test_endpoints.py

@@ -1,5 +1,11 @@
 .env
-.gitignore
 __pycache__/
 venv/
-backend/
+*.pyc
+backend/venv/
+backend/.env
+backend/__pycache__/
+backend/temp_audio/
+backend/test_results.txt
+backend/test_endpoints.py
+ffmpeg.exe
