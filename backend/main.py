@@ -18,7 +18,11 @@ app = FastAPI(title="xvoice API", description="Backend for the Gamified Voice-Te
 # --- Middlewares ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # For production, set to specific origins (Dashboard App)
+    allow_origins=[
+        "https://29629b16-9d9f-4a0b-963b-efdedb055e28.lovableproject.com",
+        "https://preview--happy-tiny-glance.lovable.app",
+        "https://happy-tiny-glance.lovable.app"
+    ], # For production, set to specific origins (Dashboard App)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
