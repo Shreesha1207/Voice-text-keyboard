@@ -63,3 +63,7 @@ app.include_router(transcribe.router)
 @app.get("/")
 def read_root():
     return {"status": "ok", "app": "xvoice backend APIs"}
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "service": "xvoice"}
