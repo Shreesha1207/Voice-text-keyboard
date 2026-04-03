@@ -3,12 +3,13 @@ name: Build & Release Xvoice
 on:
   push:
     tags:
-      - 'v*'   # triggers on v1.0.0, v1.2.3, etc.
+      - 'v*'
+
 permissions:
   contents: write
 
 jobs:
-  # ── Windows ──────────────────────────────────────────────────────────
+  # ── Windows (.exe) ────────────────────────────────────────────────────
   build-windows:
     runs-on: windows-latest
     steps:
@@ -37,7 +38,7 @@ jobs:
           name: xvoice-windows
           path: dist/xvoice.exe
 
-  # ── macOS ─────────────────────────────────────────────────────────────
+  # ── macOS (.dmg) ──────────────────────────────────────────────────────
   build-macos:
     runs-on: macos-latest
     steps:
@@ -47,24 +48,41 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install PortAudio (needed by pyaudio)
-        run: brew install portaudio
+      - name: Install system deps
+        run: brew install portaudio create-dmg
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: pip install pyaudio pynput webrtcvad python-dotenv requests pystray Pillow pyinstaller
 
       - name: Build Xvoice.app
         run: pyinstaller xvoice.spec
 
-      - name: Zip the .app bundle
-        run: cd dist && zip -r xvoice-mac.zip Xvoice.app
+      - name: Create .dmg installer
+        run: |
+          create-dmg \
+            --volname "Xvoice" \
+            --volicon "dist/Xvoice.app/Contents/Resources/icon-windowed.icns" \
+            --window-pos 200 120 \
+            --window-size 660 400 \
+            --icon-size 128 \
+            --icon "Xvoice.app" 180 170 \
+            --hide-extension "Xvoice.app" \
+            --app-drop-link 480 170 \
+            --background-color "#1a1a2e" \
+            "dist/Xvoice.dmg" \
+            "dist/Xvoice.app" \
+          || true
+          # Fallback: if create-dmg fails (e.g. missing icon), use hdiutil
+          if [ ! -f "dist/Xvoice.dmg" ]; then
+            hdiutil create -volname "Xvoice" -srcfolder dist/Xvoice.app -ov -format UDZO dist/Xvoice.dmg
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: xvoice-macos
-          path: dist/xvoice-mac.zip
+          path: dist/Xvoice.dmg
 
-  # ── Linux ─────────────────────────────────────────────────────────────
+  # ── Linux (.AppImage) ─────────────────────────────────────────────────
   build-linux:
     runs-on: ubuntu-latest
     steps:
@@ -77,7 +95,14 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y portaudio19-dev libgirepository1.0-dev gir1.2-gtk-3.0 python3-dev gcc
+          sudo apt-get install -y \
+            portaudio19-dev \
+            libgirepository1.0-dev \
+            gir1.2-gtk-3.0 \
+            python3-dev \
+            gcc \
+            libfuse2 \
+            fuse
 
       - name: Install Python dependencies
         run: pip install pyaudio pynput webrtcvad python-dotenv requests pystray Pillow pyinstaller
@@ -85,15 +110,63 @@ jobs:
       - name: Build xvoice binary
         run: pyinstaller xvoice.spec
 
-      - name: Rename binary for clarity
-        run: mv dist/xvoice dist/xvoice-linux
+      - name: Download appimagetool
+        run: |
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage \
+            -O appimagetool
+          chmod +x appimagetool
+
+      - name: Build AppImage structure
+        run: |
+          mkdir -p AppDir/usr/bin
+          cp dist/xvoice AppDir/usr/bin/xvoice
+          chmod +x AppDir/usr/bin/xvoice
+
+          # AppRun entrypoint
+          cat > AppDir/AppRun << 'EOF'
+          #!/bin/bash
+          SELF="$(readlink -f "$0")"
+          HERE="${SELF%/*}"
+          export PATH="${HERE}/usr/bin/:${PATH}"
+          exec "${HERE}/usr/bin/xvoice" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+
+          # .desktop file
+          cat > AppDir/xvoice.desktop << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Xvoice
+          Exec=xvoice
+          Icon=xvoice
+          Comment=Press F8 anywhere to instantly convert your voice to text
+          Categories=Utility;
+          NoDisplay=false
+          EOF
+
+          # Placeholder icon (32x32 purple PNG via Python Pillow)
+          python3 -c "
+          from PIL import Image, ImageDraw
+          img = Image.new('RGBA', (256, 256), (0,0,0,0))
+          d = ImageDraw.Draw(img)
+          d.ellipse([0,0,255,255], fill=(124,58,237,255))
+          d.rounded_rectangle([82,30,174,150], radius=38, fill='white')
+          d.arc([54,96,202,208], start=0, end=180, fill='white', width=14)
+          d.line([128,208,128,240], fill='white', width=14)
+          d.line([96,240,160,240], fill='white', width=14)
+          img.save('AppDir/xvoice.png')
+          "
+
+      - name: Package as AppImage
+        run: |
+          ARCH=x86_64 ./appimagetool AppDir dist/Xvoice-x86_64.AppImage
 
       - uses: actions/upload-artifact@v4
         with:
           name: xvoice-linux
-          path: dist/xvoice-linux
+          path: dist/Xvoice-x86_64.AppImage
 
-  # ── GitHub Release (runs after all 3 builds succeed) ─────────────────
+  # ── GitHub Release (waits for all 3 builds) ───────────────────────────
   release:
     needs: [build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
@@ -103,24 +176,25 @@ jobs:
         with:
           path: artifacts
 
-      - name: Create GitHub Release with all binaries
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: "Xvoice ${{ github.ref_name }}"
           files: |
             artifacts/xvoice-windows/xvoice.exe
-            artifacts/xvoice-macos/xvoice-mac.zip
-            artifacts/xvoice-linux/xvoice-linux
+            artifacts/xvoice-macos/Xvoice.dmg
+            artifacts/xvoice-linux/Xvoice-x86_64.AppImage
           body: |
             ## Xvoice ${{ github.ref_name }}
 
-            | Platform | Download |
-            |----------|----------|
-            | Windows  | `xvoice.exe` |
-            | macOS    | `xvoice-mac.zip` — unzip and drag Xvoice.app to Applications |
-            | Linux    | `xvoice-linux` — run `chmod +x xvoice-linux && ./xvoice-linux` |
+            | Platform | Download | Instructions |
+            |----------|----------|--------------|
+            | 🪟 Windows | `xvoice.exe` | Double-click to run |
+            | 🍎 macOS  | `Xvoice.dmg` | Open DMG → drag Xvoice to Applications |
+            | 🐧 Linux  | `Xvoice-x86_64.AppImage` | `chmod +x Xvoice-x86_64.AppImage && ./Xvoice-x86_64.AppImage` |
 
             ### First run
-            The app will open your browser to link your Xvoice account automatically.
+            Your browser will open automatically to link your Xvoice account.
+            Press **F8** anywhere on your computer to start dictating.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
