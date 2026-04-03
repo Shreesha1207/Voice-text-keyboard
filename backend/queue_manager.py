@@ -2,8 +2,11 @@ import redis.asyncio as redis
 import os
 import json
 import asyncio
+import logging
 from enum import IntEnum
 import uuid
+
+logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
@@ -71,6 +74,7 @@ class QueueManager:
                             return json.loads(message["data"])
              return await asyncio.wait_for(_listen(), timeout=timeout)
         except asyncio.TimeoutError:
+             logger.warning(f"Timeout waiting for transcription result for job {job_id}")
              return {"error": "timeout", "text": ""}
         finally:
              await pubsub.unsubscribe()

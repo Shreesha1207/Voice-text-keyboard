@@ -2,12 +2,15 @@ import asyncio
 import os
 import json
 import time
+import logging
 from openai import AsyncOpenAI
 import redis.asyncio as redis
 from queue_manager import REDIS_URL, Priority
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", "sk-mock-key"))
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+
+logger = logging.getLogger(__name__)
 
 async def process_transcription(job: dict) -> dict:
     start_t = time.time()
@@ -27,6 +30,7 @@ async def process_transcription(job: dict) -> dict:
                    )
               text = transcription.text.strip()
          except Exception as e:
+              logger.exception(f"Transcription process error for {filepath}")
               text = f"Error: {e}"
 
     # Generate metrics
@@ -46,7 +50,7 @@ async def process_transcription(job: dict) -> dict:
     }
 
 async def worker_loop():
-    print("Started background transcription worker.")
+    logger.info("Started background transcription worker.")
     while True:
         try:
             # Check PAID queue first
@@ -75,7 +79,7 @@ async def worker_loop():
                 await asyncio.sleep(0.1)
                 
         except Exception as e:
-            print(f"Worker iteration error: {e}")
+            logger.exception("Worker iteration error")
             await asyncio.sleep(1)
             
             
