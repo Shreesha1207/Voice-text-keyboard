@@ -1,6 +1,6 @@
 pyaudio
 pynput
 webrtcvad-wheels
-openai
 python-dotenv
+requests
 pyinstaller
