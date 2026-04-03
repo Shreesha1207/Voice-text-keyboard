@@ -1,57 +1,124 @@
-name: Build & Release xvoice.exe
+name: Build & Release Xvoice
 
 on:
   push:
     tags:
-      - 'v*'          # Triggers on tags like v1.0.0, v1.2.3
+      - 'v*'   # triggers on v1.0.0, v1.2.3, etc.
 
 jobs:
+  # ── Windows ──────────────────────────────────────────────────────────
   build-windows:
     runs-on: windows-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: |
-          pip install pyaudio pynput webrtcvad-wheels python-dotenv requests pystray Pillow pyinstaller
+        run: pip install pyaudio pynput webrtcvad-wheels python-dotenv requests pystray Pillow pyinstaller
 
       - name: Fix webrtcvad metadata (PyInstaller compatibility)
         shell: pwsh
         run: |
-          $sitePackages = python -c "import site; print(site.getsitepackages()[0])"
-          $distInfo = "$sitePackages\Lib\site-packages\webrtcvad-2.0.10.dist-info"
-          New-Item -ItemType Directory -Force -Path $distInfo | Out-Null
-          Set-Content "$distInfo\METADATA" "Metadata-Version: 2.1`nName: webrtcvad`nVersion: 2.0.10"
-          Write-Host "webrtcvad stub created at $distInfo"
+          $site = python -c "import site; print(site.getsitepackages()[0])"
+          $dir  = "$site\Lib\site-packages\webrtcvad-2.0.10.dist-info"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Set-Content "$dir\METADATA" "Metadata-Version: 2.1`nName: webrtcvad`nVersion: 2.0.10"
 
       - name: Build xvoice.exe
         run: pyinstaller xvoice.spec
 
-      - name: Upload exe as artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: xvoice-windows
           path: dist/xvoice.exe
 
-      - name: Create GitHub Release
+  # ── macOS ─────────────────────────────────────────────────────────────
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install PortAudio (needed by pyaudio)
+        run: brew install portaudio
+
+      - name: Install dependencies
+        run: pip install pyaudio pynput webrtcvad python-dotenv requests pystray Pillow pyinstaller
+
+      - name: Build Xvoice.app
+        run: pyinstaller xvoice.spec
+
+      - name: Zip the .app bundle
+        run: cd dist && zip -r xvoice-mac.zip Xvoice.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xvoice-macos
+          path: dist/xvoice-mac.zip
+
+  # ── Linux ─────────────────────────────────────────────────────────────
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y portaudio19-dev libgirepository1.0-dev gir1.2-gtk-3.0 python3-dev gcc
+
+      - name: Install Python dependencies
+        run: pip install pyaudio pynput webrtcvad python-dotenv requests pystray Pillow pyinstaller
+
+      - name: Build xvoice binary
+        run: pyinstaller xvoice.spec
+
+      - name: Rename binary for clarity
+        run: mv dist/xvoice dist/xvoice-linux
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xvoice-linux
+          path: dist/xvoice-linux
+
+  # ── GitHub Release (runs after all 3 builds succeed) ─────────────────
+  release:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release with all binaries
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/xvoice.exe
           name: "Xvoice ${{ github.ref_name }}"
+          files: |
+            artifacts/xvoice-windows/xvoice.exe
+            artifacts/xvoice-macos/xvoice-mac.zip
+            artifacts/xvoice-linux/xvoice-linux
           body: |
             ## Xvoice ${{ github.ref_name }}
-            
-            ### Download
-            - **Windows**: Download `xvoice.exe` below and double-click to run.
-            
-            ### What's new
-            See commit history for changes in this release.
+
+            | Platform | Download |
+            |----------|----------|
+            | Windows  | `xvoice.exe` |
+            | macOS    | `xvoice-mac.zip` — unzip and drag Xvoice.app to Applications |
+            | Linux    | `xvoice-linux` — run `chmod +x xvoice-linux && ./xvoice-linux` |
+
+            ### First run
+            The app will open your browser to link your Xvoice account automatically.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

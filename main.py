@@ -33,7 +33,12 @@ CHUNK = 480
 RAW_FILE = "temp_raw.wav"
 NORM_FILE = "temp_norm.wav"
 
-CONFIG_DIR = os.path.join(os.getenv('LOCALAPPDATA', os.path.expanduser('~')), 'Xvoice')
+if sys.platform == "win32":
+    CONFIG_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Xvoice")
+elif sys.platform == "darwin":
+    CONFIG_DIR = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Xvoice")
+else:  # Linux
+    CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "Xvoice")
 CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
 
 auth_success = False
