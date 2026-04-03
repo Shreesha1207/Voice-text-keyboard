@@ -20,7 +20,7 @@ else:
 # --- Configuration URLs ---
 RAILWAY_URL = "https://voicetotext-keyboard-production.up.railway.app/api"
 # Change this to your live lovable.app URL before compiling the final .exe!
-FRONTEND_URL = "http://localhost:8080" 
+FRONTEND_URL = "https://happy-tiny-glance.lovable.app" 
 LOCAL_PORT = 45678
 
 # --- Audio Settings ---

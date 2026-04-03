@@ -1,11 +1,37 @@
+# Environment & secrets
 .env
-__pycache__/
-venv/
-*.pyc
-backend/venv/
 backend/.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 backend/__pycache__/
+
+# Virtual environments
+venv/
+backend/venv/
+.venv/
+
+# Temp audio files
 backend/temp_audio/
+temp_raw.wav
+temp_norm.wav
+
+# Test artifacts
 backend/test_results.txt
 backend/test_endpoints.py
+
+# Frontend (managed separately via Lovable)
 frontend/
+
+# --- PyInstaller build artifacts (do NOT commit these) ---
+build/
+dist/
+*.spec
+# Note: xvoice.spec is intentionally committed for reproducible builds
+!xvoice.spec
+
+# Desktop app user config (token storage)
+AppData/
