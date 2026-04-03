@@ -1,0 +1,57 @@
+name: Build & Release xvoice.exe
+
+on:
+  push:
+    tags:
+      - 'v*'          # Triggers on tags like v1.0.0, v1.2.3
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install pyaudio pynput webrtcvad-wheels python-dotenv requests pystray Pillow pyinstaller
+
+      - name: Fix webrtcvad metadata (PyInstaller compatibility)
+        shell: pwsh
+        run: |
+          $sitePackages = python -c "import site; print(site.getsitepackages()[0])"
+          $distInfo = "$sitePackages\Lib\site-packages\webrtcvad-2.0.10.dist-info"
+          New-Item -ItemType Directory -Force -Path $distInfo | Out-Null
+          Set-Content "$distInfo\METADATA" "Metadata-Version: 2.1`nName: webrtcvad`nVersion: 2.0.10"
+          Write-Host "webrtcvad stub created at $distInfo"
+
+      - name: Build xvoice.exe
+        run: pyinstaller xvoice.spec
+
+      - name: Upload exe as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xvoice-windows
+          path: dist/xvoice.exe
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/xvoice.exe
+          name: "Xvoice ${{ github.ref_name }}"
+          body: |
+            ## Xvoice ${{ github.ref_name }}
+            
+            ### Download
+            - **Windows**: Download `xvoice.exe` below and double-click to run.
+            
+            ### What's new
+            See commit history for changes in this release.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

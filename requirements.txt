@@ -3,4 +3,6 @@ pynput
 webrtcvad-wheels
 python-dotenv
 requests
+pystray
+Pillow
 pyinstaller

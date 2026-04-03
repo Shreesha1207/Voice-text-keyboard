@@ -1,6 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-import sys
-from PyInstaller.utils.hooks import collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files
 
 block_cipher = None
 
@@ -8,8 +7,14 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=collect_dynamic_libs('webrtcvad'),
-    datas=[],
-    hiddenimports=['webrtcvad', 'pynput.keyboard._win32', 'pynput.mouse._win32'],
+    datas=collect_data_files('pystray'),
+    hiddenimports=[
+        'webrtcvad',
+        'pynput.keyboard._win32',
+        'pynput.mouse._win32',
+        'pystray._win32',
+        'PIL._tkinter_finder',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -42,4 +47,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=None,
 )
