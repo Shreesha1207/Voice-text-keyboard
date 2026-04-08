@@ -25,7 +25,7 @@ class User(Base):
     subscription_status: Mapped[SubscriptionStatus] = mapped_column(
         SAEnum(SubscriptionStatus), default=SubscriptionStatus.TRIAL
     )
-    is_leaderboard_opt_in: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_leaderboard_opt_in: Mapped[bool] = mapped_column(Boolean, default=True)
     total_words: Mapped[int] = mapped_column(Integer, default=0)
     streak_days: Mapped[int] = mapped_column(Integer, default=0)
     longest_streak: Mapped[int] = mapped_column(Integer, default=0)
