@@ -89,7 +89,4 @@ async def check_and_grant_achievements(user: User, db: AsyncSession) -> list[str
               db.add(new_ug)
               new_unlocks.append(a.slug)
               
-    if new_unlocks:
-         await db.commit()
-         
     return new_unlocks

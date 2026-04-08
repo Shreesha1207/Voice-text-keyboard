@@ -6,7 +6,8 @@ import logging
 from dependencies import get_current_user
 from database import get_db
 from models import User
-from schemas import TranscribeResponse
+from schemas import TranscribeResponse, RecordWordsRequest
+from routers.stats import internal_record_stats
 from queue_manager import queue_manager, Priority
 
 logger = logging.getLogger(__name__)
@@ -56,9 +57,21 @@ async def transcribe_audio(
     # Convert to response
     wait_time = result.get("queue_wait", 0)
     wpm = None
-    if wait_time and wait_time > 0 and result["processing_time"] > 0:
-        # Mocking WPM math for now
-        wpm = (result["word_count"] / wait_time) * 60
+    processing_time = result.get("processing_time", 0)
+    if processing_time and processing_time > 0:
+        wpm = round((result["word_count"] / processing_time) * 60, 2)
+
+    # 3. Automatically record stats to database
+    await internal_record_stats(
+        user=current_user,
+        db=db,
+        data=RecordWordsRequest(
+            word_count=result["word_count"],
+            char_count=result["char_count"],
+            wpm=wpm,
+            session_id=session_id
+        )
+    )
 
     return TranscribeResponse(
         text=result["text"],
