@@ -143,8 +143,7 @@ def start_tray():
         print(f"{os_name} detected: running in headless mode. Press Ctrl+C to quit.")
         import signal
         def _handle_signal(sig, frame):
-            logger.info("Xvoice shutting down (signal received).")
-            os._exit(0)
+            os._exit(0)  # Do NOT call logger here — signal handlers are async and logging uses locks
         signal.signal(signal.SIGINT, _handle_signal)
         signal.signal(signal.SIGTERM, _handle_signal)
         while True:
