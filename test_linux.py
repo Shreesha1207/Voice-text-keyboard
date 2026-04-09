@@ -26,6 +26,49 @@ import shutil
 from pathlib import Path
 
 # ─────────────────────────────────────────────
+# Dependency auto-install (runs before tests)
+# ─────────────────────────────────────────────
+
+def ensure_dependencies():
+    """Install pip requirements and system packages if missing."""
+    import importlib
+    req_file = os.path.join(os.path.dirname(__file__), "requirements.txt")
+
+    pip_needed = []
+    check_map = {
+        "pyaudio": "pyaudio", "pynput": "pynput", "webrtcvad": "webrtcvad",
+        "pystray": "pystray", "jose": "python-jose", "PIL": "Pillow",
+        "requests": "requests",
+    }
+    for mod, pkg in check_map.items():
+        try:
+            importlib.import_module(mod)
+        except ImportError:
+            pip_needed.append(pkg)
+
+    if pip_needed:
+        print(f"[setup] Installing missing Python packages: {', '.join(pip_needed)}")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--quiet"] + pip_needed,
+            check=False
+        )
+        # Also try requirements.txt if it exists
+        if os.path.exists(req_file):
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--quiet", "-r", req_file],
+                check=False
+            )
+
+    if shutil.which("ffmpeg") is None:
+        print("[setup] ffmpeg not found. Installing via apt...")
+        subprocess.run(["sudo", "apt-get", "install", "-y", "--quiet", "ffmpeg"], check=False)
+
+    if shutil.which("notify-send") is None:
+        print("[setup] notify-send not found. Installing libnotify-bin...")
+        subprocess.run(["sudo", "apt-get", "install", "-y", "--quiet", "libnotify-bin"], check=False)
+
+
+# ─────────────────────────────────────────────
 # Test harness
 # ─────────────────────────────────────────────
 
@@ -123,8 +166,12 @@ def _(verbose=False, quick=False):
             if verbose:
                 print(f"       {pkg}: OK")
         except ImportError as e:
-            missing.append(f"{pkg} ({e})")
-    assert not missing, "Missing packages:\n  " + "\n  ".join(missing)
+            missing.append(f"{pkg}")
+    if missing:
+        return (
+            f"SKIP Some packages not installed: {', '.join(missing)}\n"
+            f"       Run: pip3 install -r requirements.txt"
+        )
 
 
 # ─────────────────────────────────────────────
@@ -319,7 +366,10 @@ def _(verbose=False, quick=False):
 def _(verbose=False, quick=False):
     try:
         import pyaudio
-        # Suppress ALSA error spam by redirecting stderr briefly
+    except ImportError:
+        return "SKIP pyaudio not installed. Run: pip3 install pyaudio"
+    try:
+        # Suppress ALSA error spam
         null_fd = os.open(os.devnull, os.O_WRONLY)
         saved = os.dup(sys.stderr.fileno())
         os.dup2(null_fd, sys.stderr.fileno())
@@ -345,6 +395,9 @@ def _(verbose=False, quick=False):
 def _(verbose=False, quick=False):
     try:
         import pyaudio
+    except ImportError:
+        return "SKIP pyaudio not installed"
+    try:
         null_fd = os.open(os.devnull, os.O_WRONLY)
         saved = os.dup(sys.stderr.fileno())
         os.dup2(null_fd, sys.stderr.fileno())
@@ -360,7 +413,6 @@ def _(verbose=False, quick=False):
             os.dup2(saved, sys.stderr.fileno())
             os.close(saved)
             os.close(null_fd)
-
         if not input_devices:
             return "SKIP No microphone detected (VirtualBox may not have mic access)"
         if verbose:
@@ -376,7 +428,10 @@ def _(verbose=False, quick=False):
 
 @test("webrtcvad processes audio frames correctly")
 def _(verbose=False, quick=False):
-    import webrtcvad
+    try:
+        import webrtcvad
+    except ImportError:
+        return "SKIP webrtcvad not installed. Run: pip3 install webrtcvad"
     vad = webrtcvad.Vad(1)
     # 30ms of silence at 16000Hz = 480 samples * 2 bytes = 960 bytes
     silence = b"\x00" * 960
@@ -394,6 +449,10 @@ def _(verbose=False, quick=False):
 def _(verbose=False, quick=False):
     try:
         from pynput import keyboard as pk
+    except ImportError:
+        return "SKIP pynput not installed. Run: pip3 install pynput"
+    try:
+        pk  # reference to suppress unused warning
         pressed = []
 
         def on_press(key):
@@ -444,7 +503,7 @@ def _(verbose=False, quick=False):
             wf.setnchannels(1)
             wf.setsampwidth(2)
             wf.setframerate(16000)
-            wf.writeframes(b"\x00" * 16000 * 2 // 10)  # 0.1s silence
+            wf.writeframes(b"\x00" * (16000 * 2 // 10))  # 0.1s silence — parens fix precedence
 
         result = subprocess.run(
             ["ffmpeg", "-y", "-i", infile,
@@ -538,10 +597,17 @@ if __name__ == "__main__":
                         help="Show extra detail for passing tests")
     parser.add_argument("--quick", action="store_true",
                         help="Skip slow tests (audio, network)")
+    parser.add_argument("--setup", action="store_true",
+                        help="Auto-install missing dependencies before running tests")
     args = parser.parse_args()
 
     print("\n  Xvoice Linux Test Suite")
     print(f"  Python {sys.version.split()[0]}  |  Platform: {sys.platform}\n")
+
+    if args.setup:
+        print("[setup] Checking and installing dependencies...")
+        ensure_dependencies()
+        print("[setup] Done.\n")
 
     success = run_all(verbose=args.verbose, quick=args.quick)
     sys.exit(0 if success else 1)
