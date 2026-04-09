@@ -97,6 +97,24 @@ def safe_notify(msg, title="Xvoice"):
 
 def start_tray():
     global tray_icon
+
+    # pystray's Xorg backend is fundamentally broken on Linux:
+    # KeyboardInterrupt propagates through its internal C-level event loop
+    # and crashes the process even when wrapped in try/except.
+    # Run fully headless on Linux and use notify-send instead.
+    if sys.platform.startswith("linux"):
+        print("Linux detected: running in headless mode (no system tray).")
+        print("Press Ctrl+C to quit Xvoice.")
+        import signal
+        def _handle_signal(sig, frame):
+            print("Xvoice shutting down.")
+            os._exit(0)
+        signal.signal(signal.SIGINT, _handle_signal)
+        signal.signal(signal.SIGTERM, _handle_signal)
+        while True:
+            time.sleep(1)
+        return
+
     image = _make_icon_image()
     menu = pystray.Menu(
         pystray.MenuItem("Open Dashboard", _open_dashboard, default=True),
@@ -106,12 +124,12 @@ def start_tray():
         pystray.MenuItem("Quit Xvoice",    _quit_app),
     )
     tray_icon = pystray.Icon("xvoice", image, "Xvoice - Press F8 to dictate", menu)
-    
+
     try:
         tray_icon.run()          # blocking — runs on its own thread
     except Exception as e:
         print(f"System tray icon exception: {e}")
-        
+
     print("Tray icon closed or unavailable. Running in headless mode.")
     tray_icon = None
     # Keep the main thread alive so background threads can continue
