@@ -88,7 +88,7 @@ def start_tray():
         pystray.MenuItem("Log Out",        _logout),
         pystray.MenuItem("Quit Xvoice",    _quit_app),
     )
-    tray_icon = pystray.Icon("xvoice", image, "Xvoice — Press F8 to dictate", menu)
+    tray_icon = pystray.Icon("xvoice", image, "Xvoice - Press F8 to dictate", menu)
     tray_icon.run()          # blocking — runs on its own thread
 
 # ─────────────────────────────────────────────
