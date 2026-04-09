@@ -73,11 +73,18 @@ def _open_download(icon, item):
 def _logout(icon, item):
     if os.path.exists(CONFIG_FILE):
         os.remove(CONFIG_FILE)
-    icon.notify("Logged out", "Xvoice")
+    safe_notify("Logged out", "Xvoice")
 
 def _quit_app(icon, item):
     icon.stop()
     os._exit(0)
+
+def safe_notify(msg, title="Xvoice"):
+    if tray_icon is not None:
+        try:
+            tray_icon.notify(msg, title)
+        except Exception:
+            pass
 
 def start_tray():
     global tray_icon
@@ -94,11 +101,13 @@ def start_tray():
     try:
         tray_icon.run()          # blocking — runs on its own thread
     except Exception as e:
-        print(f"System tray icon could not be displayed ({e}). Running in headless mode.")
-        tray_icon = None
-        # Keep the main thread alive so background threads can continue
-        while True:
-            time.sleep(1)
+        print(f"System tray icon exception: {e}")
+        
+    print("Tray icon closed or unavailable. Running in headless mode.")
+    tray_icon = None
+    # Keep the main thread alive so background threads can continue
+    while True:
+        time.sleep(1)
 
 # ─────────────────────────────────────────────
 #   Token helpers
@@ -175,7 +184,7 @@ def require_auth():
         server.handle_request()
 
     if tray_icon:
-        tray_icon.notify("Connected!", "Xvoice is ready. Press F8 to dictate.")
+        safe_notify("Connected!", "Xvoice is ready. Press F8 to dictate.")
     return True
 
 # ─────────────────────────────────────────────
@@ -339,19 +348,15 @@ def transcribe_audio(audio_file):
                 if winsound:
                     winsound.Beep(1200, 50)
         elif response.status_code == 403:
-            if tray_icon:
-                tray_icon.notify("Trial Expired", "Upgrade on the dashboard to continue.")
+            safe_notify("Trial Expired", "Upgrade on the dashboard to continue.")
         elif response.status_code == 401:
             if os.path.exists(CONFIG_FILE):
                 os.remove(CONFIG_FILE)
-            if tray_icon:
-                tray_icon.notify("Session expired", "Restart Xvoice to log in again.")
+            safe_notify("Session expired", "Restart Xvoice to log in again.")
         elif response.status_code == 429:
-            if tray_icon:
-                tray_icon.notify("Server busy", "Try again in a moment.")
+            safe_notify("Server busy", "Try again in a moment.")
     except Exception as e:
-        if tray_icon:
-            tray_icon.notify("Connection error", str(e)[:80])
+        safe_notify("Connection error", str(e)[:80])
 
 # ─────────────────────────────────────────────
 #   Main
