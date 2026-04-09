@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
 import pystray
 from PIL import Image, ImageDraw
+from contextlib import contextmanager
 
 if sys.platform == "win32":
     import winsound
@@ -89,7 +90,15 @@ def start_tray():
         pystray.MenuItem("Quit Xvoice",    _quit_app),
     )
     tray_icon = pystray.Icon("xvoice", image, "Xvoice - Press F8 to dictate", menu)
-    tray_icon.run()          # blocking — runs on its own thread
+    
+    try:
+        tray_icon.run()          # blocking — runs on its own thread
+    except Exception as e:
+        print(f"System tray icon could not be displayed ({e}). Running in headless mode.")
+        tray_icon = None
+        # Keep the main thread alive so background threads can continue
+        while True:
+            time.sleep(1)
 
 # ─────────────────────────────────────────────
 #   Token helpers
@@ -233,17 +242,41 @@ vad = webrtcvad.Vad(1)
 #   Audio pipeline
 # ─────────────────────────────────────────────
 
+@contextmanager
+def suppress_stderr():
+    """Context manager to suppress C-level stderr (used to silence ALSA/JACK warnings)."""
+    try:
+        null_fd = os.open(os.devnull, os.O_WRONLY)
+        saved_stderr = os.dup(sys.stderr.fileno())
+        os.dup2(null_fd, sys.stderr.fileno())
+    except Exception:
+        yield
+        return
+
+    try:
+        yield
+    finally:
+        try:
+            os.dup2(saved_stderr, sys.stderr.fileno())
+            os.close(saved_stderr)
+            os.close(null_fd)
+        except Exception:
+            pass
+
 def record_audio(output_filename):
-    audio = pyaudio.PyAudio()
+    with suppress_stderr():
+        audio = pyaudio.PyAudio()
+        
     wait_hotkey(HOTKEY)
     if winsound:
         winsound.Beep(1000, 100)
 
     try:
-        stream = audio.open(
-            format=FORMAT, channels=CHANNELS, rate=RATE,
-            input=True, frames_per_buffer=CHUNK
-        )
+        with suppress_stderr():
+            stream = audio.open(
+                format=FORMAT, channels=CHANNELS, rate=RATE,
+                input=True, frames_per_buffer=CHUNK
+            )
     except Exception:
         audio.terminate()
         while is_pressed(HOTKEY):
