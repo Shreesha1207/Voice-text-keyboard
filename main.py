@@ -80,6 +80,15 @@ def _quit_app(icon, item):
     os._exit(0)
 
 def safe_notify(msg, title="Xvoice"):
+    import sys
+    import subprocess
+    if sys.platform.startswith("linux"):
+        try:
+            subprocess.run(["notify-send", title, msg])
+        except Exception:
+            pass
+        return
+
     if tray_icon is not None:
         try:
             tray_icon.notify(msg, title)
