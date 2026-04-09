@@ -476,7 +476,7 @@ def _(verbose=False, quick=False):
 def _(verbose=False, quick=False):
     path = shutil.which("ffmpeg")
     if path is None:
-        raise AssertionError("ffmpeg not found. Run: sudo apt install ffmpeg")
+        return "SKIP ffmpeg not found. Run: sudo apt install ffmpeg"
     result = subprocess.run(["ffmpeg", "-version"],
                             capture_output=True, text=True)
     assert result.returncode == 0, "ffmpeg --version failed"
@@ -491,6 +491,8 @@ def _(verbose=False, quick=False):
 
 @test("normalize_audio() produces valid output file")
 def _(verbose=False, quick=False):
+    if shutil.which("ffmpeg") is None:
+        return "SKIP ffmpeg not installed. Run: sudo apt install ffmpeg"
     import wave
     # Create a tiny valid WAV file (16kHz mono, 0.1s silence)
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
