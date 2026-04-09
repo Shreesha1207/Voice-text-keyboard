@@ -46,6 +46,35 @@ auth_success = False
 tray_icon = None
 
 # ─────────────────────────────────────────────
+#   Logging — writes to a file so you can always
+#   find errors regardless of platform/bundling
+# ─────────────────────────────────────────────
+
+import logging
+
+if sys.platform == "win32":
+    LOG_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Xvoice")
+elif sys.platform == "darwin":
+    LOG_DIR = os.path.join(os.path.expanduser("~"), "Library", "Logs", "Xvoice")
+else:
+    LOG_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "Xvoice", "logs")
+
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, "xvoice.log")
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.StreamHandler(sys.stdout),
+    ]
+)
+logger = logging.getLogger("xvoice")
+logger.info(f"Xvoice starting. Platform: {sys.platform}")
+logger.info(f"Log file: {LOG_FILE}")
+
+# ─────────────────────────────────────────────
 #   System Tray
 # ─────────────────────────────────────────────
 
@@ -80,15 +109,22 @@ def _quit_app(icon, item):
     os._exit(0)
 
 def safe_notify(msg, title="Xvoice"):
-    import sys
-    import subprocess
+    logger.info(f"Notification: [{title}] {msg}")
     if sys.platform.startswith("linux"):
         try:
-            subprocess.run(["notify-send", title, msg])
+            subprocess.run(["notify-send", title, msg], timeout=3)
         except Exception:
             pass
         return
-
+    if sys.platform == "darwin":
+        try:
+            subprocess.run(
+                ["osascript", "-e", f'display notification "{msg}" with title "{title}"'],
+                timeout=3
+            )
+        except Exception:
+            pass
+        return
     if tray_icon is not None:
         try:
             tray_icon.notify(msg, title)
@@ -98,16 +134,16 @@ def safe_notify(msg, title="Xvoice"):
 def start_tray():
     global tray_icon
 
-    # pystray's Xorg backend is fundamentally broken on Linux:
-    # KeyboardInterrupt propagates through its internal C-level event loop
-    # and crashes the process even when wrapped in try/except.
-    # Run fully headless on Linux and use notify-send instead.
-    if sys.platform.startswith("linux"):
-        print("Linux detected: running in headless mode (no system tray).")
-        print("Press Ctrl+C to quit Xvoice.")
+    # pystray is fundamentally broken on Linux (Xorg) and macOS (NSApplication
+    # must own the main thread in a PyInstaller bundle) — skip it on both and
+    # run headless instead, using notify-send / osascript for notifications.
+    if sys.platform.startswith("linux") or sys.platform == "darwin":
+        os_name = "macOS" if sys.platform == "darwin" else "Linux"
+        logger.info(f"{os_name} detected: running in headless mode (no system tray).")
+        print(f"{os_name} detected: running in headless mode. Press Ctrl+C to quit.")
         import signal
         def _handle_signal(sig, frame):
-            print("Xvoice shutting down.")
+            logger.info("Xvoice shutting down (signal received).")
             os._exit(0)
         signal.signal(signal.SIGINT, _handle_signal)
         signal.signal(signal.SIGTERM, _handle_signal)
