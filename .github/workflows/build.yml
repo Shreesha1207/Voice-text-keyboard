@@ -40,13 +40,17 @@ jobs:
         shell: pwsh
         run: |
           $site = python -c "import site; print(site.getsitepackages()[0])"
-          $dist = Get-ChildItem "$site" | Where-Object { $_.Name -like "webrtcvad*.dist-info" } | Select-Object -First 1
+          Write-Host "Site packages: $site"
+          Write-Host "All dist-info folders:"
+          Get-ChildItem "$site" | Where-Object { $_.Name -like "*.dist-info" } | ForEach-Object { Write-Host $_.Name }
+          $dist = Get-ChildItem "$site" | Where-Object { $_.Name -like "webrtcvad*" } | Select-Object -First 1
           if ($dist -eq $null) {
-            Write-Error "webrtcvad dist-info folder not found!"
-            exit 1
+            Write-Host "No webrtcvad folder found at all - checking pip show"
+            python -m pip show webrtcvad-wheels
+            python -m pip show webrtcvad
+          } else {
+            Write-Host "Found: $($dist.Name)"
           }
-          $metaPath = "$($dist.FullName)\METADATA"
-          Set-Content $metaPath "Metadata-Version: 2.1`nName: webrtcvad`nVersion: 2.0.10"
 
       - name: Build xvoice.exe
         run: pyinstaller --noconfirm xvoice.spec
