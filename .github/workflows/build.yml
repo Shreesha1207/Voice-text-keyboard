@@ -9,6 +9,7 @@ permissions:
   contents: write
 
 jobs:
+  # ── Windows (.exe) ────────────────────────────────────────────────────
   build-windows:
     runs-on: windows-latest
     steps:
@@ -39,18 +40,15 @@ jobs:
       - name: Fix webrtcvad metadata
         shell: pwsh
         run: |
-          $site = python -c "import site; print(site.getsitepackages()[0])"
-          Write-Host "Site packages: $site"
-          Write-Host "All dist-info folders:"
-          Get-ChildItem "$site" | Where-Object { $_.Name -like "*.dist-info" } | ForEach-Object { Write-Host $_.Name }
-          $dist = Get-ChildItem "$site" | Where-Object { $_.Name -like "webrtcvad*" } | Select-Object -First 1
-          if ($dist -eq $null) {
-            Write-Host "No webrtcvad folder found at all - checking pip show"
-            python -m pip show webrtcvad-wheels
-            python -m pip show webrtcvad
-          } else {
-            Write-Host "Found: $($dist.Name)"
-          }
+          # Find the actual site-packages directory (not the Python root)
+          $site = python -c "import site; dirs = site.getsitepackages(); sp = next((d for d in dirs if 'site-packages' in d), dirs[-1]); print(sp)"
+          Write-Host "Using site-packages: $site"
+          $dir = "$site\webrtcvad-2.0.14.dist-info"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Set-Content "$dir\METADATA" "Metadata-Version: 2.1`nName: webrtcvad`nVersion: 2.0.14"
+          Set-Content "$dir\INSTALLER" "pip"
+          Write-Host "Created: $dir\METADATA"
+          Get-Content "$dir\METADATA"
 
       - name: Build xvoice.exe
         run: pyinstaller --noconfirm xvoice.spec
@@ -87,6 +85,16 @@ jobs:
           export LDFLAGS="-L/opt/homebrew/lib"
           export CPPFLAGS="-I/opt/homebrew/include"
           pip install pyaudio pynput webrtcvad-wheels python-dotenv requests pystray Pillow pyinstaller
+
+      - name: Fix webrtcvad metadata
+        run: |
+          SITE=$(python -c "import site; print(site.getsitepackages()[0])")
+          DIR="$SITE/webrtcvad-2.0.14.dist-info"
+          mkdir -p "$DIR"
+          printf 'Metadata-Version: 2.1\nName: webrtcvad\nVersion: 2.0.14\n' > "$DIR/METADATA"
+          echo "Created: $DIR/METADATA"
+          cat "$DIR/METADATA"
+
 
       - name: Build Xvoice.app
         run: pyinstaller --noconfirm xvoice.spec
@@ -147,6 +155,7 @@ jobs:
             gcc \
             libfuse2 \
             fuse \
+            xvfb \
             gir1.2-gtk-3.0 \
             gir1.2-appindicator3-0.1 \
             libayatana-appindicator3-dev
@@ -156,8 +165,17 @@ jobs:
       - name: Install Python dependencies
         run: pip install pyaudio pynput webrtcvad-wheels python-dotenv requests pystray Pillow pyinstaller
 
+      - name: Fix webrtcvad metadata
+        run: |
+          SITE=$(python -c "import site; print(site.getsitepackages()[0])")
+          DIR="$SITE/webrtcvad-2.0.14.dist-info"
+          mkdir -p "$DIR"
+          printf 'Metadata-Version: 2.1\nName: webrtcvad\nVersion: 2.0.14\n' > "$DIR/METADATA"
+          echo "Created: $DIR/METADATA"
+          cat "$DIR/METADATA"
+
       - name: Build xvoice binary
-        run: pyinstaller --noconfirm xvoice.spec
+        run: xvfb-run pyinstaller --noconfirm xvoice.spec
 
       - name: Verify binary exists
         run: |
