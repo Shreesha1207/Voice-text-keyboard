@@ -134,22 +134,6 @@ def safe_notify(msg, title="Xvoice"):
 def start_tray():
     global tray_icon
 
-    # pystray is fundamentally broken on Linux (Xorg) and macOS (NSApplication
-    # must own the main thread in a PyInstaller bundle) — skip it on both and
-    # run headless instead, using notify-send / osascript for notifications.
-    if sys.platform.startswith("linux") or sys.platform == "darwin":
-        os_name = "macOS" if sys.platform == "darwin" else "Linux"
-        logger.info(f"{os_name} detected: running in headless mode (no system tray).")
-        print(f"{os_name} detected: running in headless mode. Press Ctrl+C to quit.")
-        import signal
-        def _handle_signal(sig, frame):
-            os._exit(0)  # Do NOT call logger here — signal handlers are async and logging uses locks
-        signal.signal(signal.SIGINT, _handle_signal)
-        signal.signal(signal.SIGTERM, _handle_signal)
-        while True:
-            time.sleep(1)
-        return
-
     image = _make_icon_image()
     menu = pystray.Menu(
         pystray.MenuItem("Open Dashboard", _open_dashboard, default=True),
@@ -158,19 +142,27 @@ def start_tray():
         pystray.MenuItem("Log Out",        _logout),
         pystray.MenuItem("Quit Xvoice",    _quit_app),
     )
-    tray_icon = pystray.Icon("xvoice", image, "Xvoice - Press F8 to dictate", menu)
 
     try:
-        tray_icon.run()          # blocking — runs on its own thread
+        tray_icon = pystray.Icon("xvoice", image, "Xvoice - Press F8 to dictate", menu)
+        tray_icon.run()
     except Exception as e:
-        print(f"System tray icon exception: {e}")
+        logger.warning(f"System tray unavailable ({e}). Falling back to headless mode.")
+        tray_icon = None
 
-    print("Tray icon closed or unavailable. Running in headless mode.")
-    tray_icon = None
-    # Keep the main thread alive so background threads can continue
+    # Headless fallback — reached if tray fails or is unavailable
+    os_name = "macOS" if sys.platform == "darwin" else "Linux"
+    logger.info(f"{os_name} detected: running in headless mode (no system tray).")
+    print(f"{os_name} detected: running in headless mode. Press Ctrl+C to quit.")
+
+    import signal
+    def _handle_signal(sig, frame):
+        os._exit(0)
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+
     while True:
         time.sleep(1)
-
 # ─────────────────────────────────────────────
 #   Token helpers
 # ─────────────────────────────────────────────
@@ -294,8 +286,12 @@ def on_release(key):
     if key == KEY_OBJ:
         hotkey_pressed = False
 
-listener = pk.Listener(on_press=on_press, on_release=on_release)
-listener.start()
+try:
+    listener = pk.Listener(on_press=on_press, on_release=on_release)
+    listener.start()
+except Exception as e:
+    logger.warning(f"Keyboard listener failed to start: {e}")
+    listener = None
 
 def wait_hotkey(_):
     while not hotkey_pressed:
