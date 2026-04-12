@@ -146,11 +146,13 @@ def start_tray():
     try:
         tray_icon = pystray.Icon("xvoice", image, "Xvoice - Press F8 to dictate", menu)
         tray_icon.run()
+    except KeyboardInterrupt:
+        os._exit(0)
     except Exception as e:
         logger.warning(f"System tray unavailable ({e}). Falling back to headless mode.")
         tray_icon = None
 
-    # Headless fallback — reached if tray fails or is unavailable
+    # Headless fallback
     os_name = "macOS" if sys.platform == "darwin" else "Linux"
     logger.info(f"{os_name} detected: running in headless mode (no system tray).")
     print(f"{os_name} detected: running in headless mode. Press Ctrl+C to quit.")
