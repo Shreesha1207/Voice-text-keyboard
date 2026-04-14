@@ -24,7 +24,8 @@ app.add_middleware(
         "http://localhost:5173", 
         "https://29629b16-9d9f-4a0b-963b-efdedb055e28.lovableproject.com",
         "https://preview--happy-tiny-glance.lovable.app",
-        "https://happy-tiny-glance.lovable.app"
+        "https://happy-tiny-glance.lovable.app",
+        "https://id-preview--29629b16-9d9f-4a0b-963b-efdedb055e28.lovable.app",
     ], # For production, set to specific origins (Dashboard App)
     allow_credentials=True,
     allow_methods=["*"],

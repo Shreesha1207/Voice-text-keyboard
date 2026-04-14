@@ -1,14 +1,16 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc, extract
+from sqlalchemy import select, func, desc, extract, cast, Date
 from datetime import datetime, date, timedelta, timezone
+from typing import Optional, List
 import uuid
 import calendar
 
 from database import get_db
 from models import User, Session, WordRecord
 from schemas import (
-    RecordWordsRequest, StatsSummaryResponse, LeaderboardResponse, LeaderboardEntry, StartSessionResponse
+    RecordWordsRequest, StatsSummaryResponse, LeaderboardResponse, LeaderboardEntry,
+    StartSessionResponse, DailyStat, DailyStatsResponse
 )
 from dependencies import get_current_user
 from routers.achievements import check_and_grant_achievements
@@ -189,3 +191,50 @@ async def get_leaderboard(current_user: User = Depends(get_current_user), db: As
         entries=entries,
         user_rank=user_rank
     )
+
+
+@router.get("/daily", response_model=DailyStatsResponse)
+async def get_daily_stats(
+    month: str = Query(..., description="Target month in YYYY-MM format, e.g. 2026-04"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Return per-day word counts for the given month (YYYY-MM)."""
+    # Validate and parse the month parameter
+    try:
+        month_start = datetime.strptime(month, "%Y-%m").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid month format. Use YYYY-MM.")
+
+    # Calculate inclusive date range for the requested month
+    year, month_num = month_start.year, month_start.month
+    last_day = calendar.monthrange(year, month_num)[1]
+    month_end = month_start.replace(day=last_day, hour=23, minute=59, second=59)
+
+    # Group WordRecords by date (cast timestamp to DATE) for this user within the month
+    stmt = (
+        select(
+            cast(WordRecord.recorded_at, Date).label("day"),
+            func.sum(WordRecord.word_count).label("total")
+        )
+        .where(
+            WordRecord.user_id == current_user.id,
+            WordRecord.recorded_at >= month_start.replace(tzinfo=None),
+            WordRecord.recorded_at <= month_end.replace(tzinfo=None)
+        )
+        .group_by(cast(WordRecord.recorded_at, Date))
+        .order_by(cast(WordRecord.recorded_at, Date))
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    days: List[DailyStat] = [
+        DailyStat(date=str(row.day), words=int(row.total))
+        for row in rows
+    ]
+
+    best_day: Optional[DailyStat] = None
+    if days:
+        best_day = max(days, key=lambda d: d.words)
+
+    return DailyStatsResponse(days=days, best_day=best_day)

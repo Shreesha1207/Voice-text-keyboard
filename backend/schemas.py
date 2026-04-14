@@ -93,6 +93,16 @@ class LeaderboardResponse(BaseModel):
     user_rank: Optional[int]
 
 
+class DailyStat(BaseModel):
+    date: str       # ISO date string e.g. "2026-04-01"
+    words: int
+
+
+class DailyStatsResponse(BaseModel):
+    days: list[DailyStat]
+    best_day: Optional[DailyStat] = None
+
+
 # ─── Achievements ─────────────────────────────────────────────────────────────
 
 class AchievementOut(BaseModel):
