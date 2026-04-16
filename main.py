@@ -9,6 +9,7 @@ import json
 import time
 import threading
 import webbrowser
+import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
 import pystray
@@ -44,6 +45,30 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
 
 auth_success = False
 tray_icon = None
+
+# ─────────────────────────────────────────────
+#   Single-instance lock
+#   We bind a loopback TCP socket for the lifetime
+#   of the process.  A second launch finds the port
+#   occupied and exits cleanly.
+# ─────────────────────────────────────────────
+
+INSTANCE_PORT = 45679          # arbitrary; distinct from LOCAL_PORT (45678)
+_instance_lock: socket.socket | None = None
+
+def acquire_instance_lock() -> bool:
+    """Try to acquire the single-instance lock.
+    Returns True if this is the only instance, False otherwise."""
+    global _instance_lock
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+        sock.bind(("127.0.0.1", INSTANCE_PORT))
+        sock.listen(1)
+        _instance_lock = sock          # keep alive for the process lifetime
+        return True
+    except OSError:
+        return False
 
 # ─────────────────────────────────────────────
 #   Logging — writes to a file so you can always
@@ -215,8 +240,51 @@ class AuthHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass          # silence server logs
 
+# ─────────────────────────────────────────────
+#   Internet connectivity helper
+# ─────────────────────────────────────────────
+
+def has_internet(timeout: float = 3.0) -> bool:
+    """Return True if we can reach at least one of several well-known hosts.
+
+    Tries multiple targets so that corporate firewalls blocking a specific
+    IP (e.g. 8.8.8.8) don't cause a false negative.
+    Uses per-socket timeout — does NOT touch socket.setdefaulttimeout()
+    so other sockets in the process are unaffected.
+    """
+    targets = [
+        ("8.8.8.8",       53),   # Google DNS
+        ("1.1.1.1",       53),   # Cloudflare DNS
+        ("208.67.222.222", 53),  # OpenDNS
+    ]
+    for host, port in targets:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout)          # per-socket, not global
+            sock.connect((host, port))
+            sock.close()
+            return True
+        except OSError:
+            continue
+    return False
+
+def wait_for_internet(poll_interval: float = 5.0) -> None:
+    """Block until an internet connection is detected.
+    Logs a message only the first time we enter the wait."""
+    if has_internet():
+        return
+    logger.info("No internet connection detected. Waiting…")
+    safe_notify("No internet", "Xvoice will connect as soon as the network is available.")
+    while not has_internet():
+        time.sleep(poll_interval)
+    logger.info("Internet connection restored.")
+
 def require_auth():
     global auth_success
+
+    # ── Wait for a live network before touching any endpoint ──
+    wait_for_internet()
+
     token = load_token()
 
     if token:
@@ -232,6 +300,7 @@ def require_auth():
             pass
 
     # No valid token — trigger web login
+    # (internet is guaranteed at this point)
     webbrowser.open(f"{FRONTEND_URL}/connect-desktop")
 
     server = HTTPServer(('127.0.0.1', LOCAL_PORT), AuthHandler)
@@ -437,6 +506,40 @@ def voice_loop():
                     os.remove(f)
 
 if __name__ == "__main__":
+    # ── Single-instance guard ──────────────────
+    if not acquire_instance_lock():
+        msg = (
+            "Xvoice is already running.\n"
+            "Please quit the existing instance before starting a new one."
+        )
+        logger.warning("Another Xvoice instance is already running. Exiting.")
+        # Try to surface a visible OS-level dialog / notification
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.user32.MessageBoxW(
+                    0, msg, "Xvoice — Already Running", 0x30  # MB_ICONWARNING
+                )
+            except Exception:
+                print(msg)
+        elif sys.platform == "darwin":
+            try:
+                subprocess.run(
+                    ["osascript", "-e",
+                     f'display alert "Xvoice — Already Running" message "{msg}"'],
+                    timeout=5
+                )
+            except Exception:
+                print(msg)
+        else:
+            try:
+                subprocess.run(["notify-send", "Xvoice — Already Running", msg], timeout=3)
+            except Exception:
+                pass
+            print(msg)
+        sys.exit(0)
+    # ──────────────────────────────────────────
+
     setup_startup()
     t = threading.Thread(target=voice_loop, daemon=True)
     t.start()
