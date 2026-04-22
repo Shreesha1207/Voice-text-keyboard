@@ -64,11 +64,27 @@ def acquire_instance_lock() -> bool:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
         sock.bind(("127.0.0.1", INSTANCE_PORT))
-        sock.listen(1)
+        sock.listen(5)
         _instance_lock = sock          # keep alive for the process lifetime
         return True
     except OSError:
         return False
+
+def _focus_listener_thread():
+    """Background thread (running instance only).
+    Blocks on accept(); when a second launch connects it closes the
+    connection immediately and fires a tray notification so the user
+    knows the app is already alive in the system tray."""
+    while True:
+        try:
+            conn, _ = _instance_lock.accept()
+            conn.close()
+            safe_notify(
+                "Xvoice is already running — look for the mic icon in your system tray.",
+                "Xvoice"
+            )
+        except Exception:
+            break   # socket closed on exit — stop the thread cleanly
 
 # ─────────────────────────────────────────────
 #   Logging — writes to a file so you can always
@@ -508,37 +524,22 @@ def voice_loop():
 if __name__ == "__main__":
     # ── Single-instance guard ──────────────────
     if not acquire_instance_lock():
-        msg = (
-            "Xvoice is already running.\n"
-            "Please quit the existing instance before starting a new one."
-        )
-        logger.warning("Another Xvoice instance is already running. Exiting.")
-        # Try to surface a visible OS-level dialog / notification
-        if sys.platform == "win32":
-            try:
-                import ctypes
-                ctypes.windll.user32.MessageBoxW(
-                    0, msg, "Xvoice — Already Running", 0x30  # MB_ICONWARNING
-                )
-            except Exception:
-                print(msg)
-        elif sys.platform == "darwin":
-            try:
-                subprocess.run(
-                    ["osascript", "-e",
-                     f'display alert "Xvoice — Already Running" message "{msg}"'],
-                    timeout=5
-                )
-            except Exception:
-                print(msg)
-        else:
-            try:
-                subprocess.run(["notify-send", "Xvoice — Already Running", msg], timeout=3)
-            except Exception:
-                pass
-            print(msg)
+        # Ping the running instance so it flashes a tray notification,
+        # then exit silently — no dialog, no "quit first" friction.
+        logger.info("Another instance is running; sending focus ping and exiting.")
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(2)
+            s.connect(("127.0.0.1", INSTANCE_PORT))
+            s.close()
+        except Exception:
+            pass   # running instance may be starting up; safe to ignore
         sys.exit(0)
     # ──────────────────────────────────────────
+
+    # Start the focus-ping listener so future duplicate launches are
+    # handled gracefully (daemon=True → dies with the main process).
+    threading.Thread(target=_focus_listener_thread, daemon=True).start()
 
     setup_startup()
     t = threading.Thread(target=voice_loop, daemon=True)
