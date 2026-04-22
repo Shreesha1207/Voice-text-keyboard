@@ -56,19 +56,43 @@ tray_icon = None
 INSTANCE_PORT = 45679          # arbitrary; distinct from LOCAL_PORT (45678)
 _instance_lock: socket.socket | None = None
 
-def acquire_instance_lock() -> bool:
-    """Try to acquire the single-instance lock.
-    Returns True if this is the only instance, False otherwise."""
-    global _instance_lock
+def _live_instance_running() -> bool:
+    """Return True only if something is actively listening on INSTANCE_PORT."""
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
-        sock.bind(("127.0.0.1", INSTANCE_PORT))
-        sock.listen(5)
-        _instance_lock = sock          # keep alive for the process lifetime
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.settimeout(1)
+        probe.connect(("127.0.0.1", INSTANCE_PORT))
+        probe.close()
         return True
     except OSError:
         return False
+
+def acquire_instance_lock() -> bool:
+    """Try to acquire the single-instance lock.
+
+    Retries up to 3 times with a short delay so that a brief OS port-cleanup
+    state after a crash/kill does NOT block the next launch.
+    Only returns False when a genuinely live instance is detected.
+    """
+    global _instance_lock
+    for attempt in range(3):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+            sock.bind(("127.0.0.1", INSTANCE_PORT))
+            sock.listen(5)
+            _instance_lock = sock
+            return True
+        except OSError:
+            sock.close()
+            if _live_instance_running():
+                return False        # real instance is up → we are the duplicate
+            # Bind failed but nobody is listening → transient OS cleanup state
+            # Wait and retry rather than incorrectly blocking startup
+            time.sleep(1.5)
+
+    # Last-chance check after retries
+    return not _live_instance_running()  # start if nobody is actually there
 
 def _focus_listener_thread():
     """Background thread (running instance only).
@@ -219,10 +243,22 @@ def load_token():
             pass
     return None
 
-def save_token(access_token):
+def load_refresh_token():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                return json.load(f).get('refresh_token')
+        except Exception:
+            pass
+    return None
+
+def save_token(access_token, refresh_token=None):
     os.makedirs(CONFIG_DIR, exist_ok=True)
+    data = {'access_token': access_token}
+    if refresh_token:
+        data['refresh_token'] = refresh_token
     with open(CONFIG_FILE, 'w') as f:
-        json.dump({'access_token': access_token}, f)
+        json.dump(data, f)
 
 # ─────────────────────────────────────────────
 #   Magic Auth (one-time browser login)
@@ -241,8 +277,9 @@ class AuthHandler(BaseHTTPRequestHandler):
             length = int(self.headers['Content-Length'])
             data = json.loads(self.rfile.read(length).decode('utf-8'))
             token = data.get('token')
+            refresh = data.get('refresh_token')   # optional; sent by some frontend versions
             if token:
-                save_token(token)
+                save_token(token, refresh)
                 self.send_response(200)
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
@@ -258,6 +295,33 @@ class AuthHandler(BaseHTTPRequestHandler):
 
 # ─────────────────────────────────────────────
 #   Internet connectivity helper
+# ─────────────────────────────────────────────
+#   Silent token refresh
+# ─────────────────────────────────────────────
+
+need_reauth = False   # set by transcribe_audio; read by voice_loop
+
+def try_silent_refresh() -> bool:
+    """Use the stored refresh token to silently get a new access token.
+    Returns True if successful (new access token saved), False otherwise."""
+    refresh = load_refresh_token()
+    if not refresh:
+        return False
+    try:
+        r = requests.post(
+            f"{RAILWAY_URL}/auth/refresh",
+            json={"refresh_token": refresh},
+            timeout=10
+        )
+        if r.status_code == 200:
+            data = r.json()
+            save_token(data['access_token'], data.get('refresh_token', refresh))
+            logger.info("Access token silently refreshed.")
+            return True
+    except Exception as e:
+        logger.warning(f"Silent refresh failed: {e}")
+    return False
+
 # ─────────────────────────────────────────────
 
 def has_internet(timeout: float = 3.0) -> bool:
@@ -475,6 +539,7 @@ def normalize_audio(input_file, output_file):
         return False
 
 def transcribe_audio(audio_file):
+    global need_reauth
     token = load_token()
     headers = {"Authorization": f"Bearer {token}"}
     try:
@@ -495,9 +560,16 @@ def transcribe_audio(audio_file):
         elif response.status_code == 403:
             safe_notify("Trial Expired", "Upgrade on the dashboard to continue.")
         elif response.status_code == 401:
-            if os.path.exists(CONFIG_FILE):
-                os.remove(CONFIG_FILE)
-            safe_notify("Session expired", "Restart Xvoice to log in again.")
+            logger.warning("401 received — attempting silent token refresh.")
+            if try_silent_refresh():
+                # Got a fresh token; next F8 press will use it automatically
+                safe_notify("Session renewed", "Xvoice reconnected automatically.")
+            else:
+                # Refresh token missing or expired — need full re-login
+                if os.path.exists(CONFIG_FILE):
+                    os.remove(CONFIG_FILE)
+                need_reauth = True
+                safe_notify("Session expired", "Xvoice will reconnect — check your browser.")
         elif response.status_code == 429:
             safe_notify("Server busy", "Try again in a moment.")
     except Exception as e:
@@ -509,8 +581,16 @@ def transcribe_audio(audio_file):
 
 def voice_loop():
     """Runs the F8 recording loop in a background thread."""
+    global need_reauth, auth_success
     require_auth()
     while True:
+        # Re-auth if the token expired and silent refresh also failed
+        if need_reauth:
+            need_reauth = False
+            auth_success = False    # MUST reset so the login server loop actually runs
+            logger.info("Re-authenticating after session expiry.")
+            require_auth()
+
         has_speech = record_audio(RAW_FILE)
         if not has_speech:
             continue
@@ -524,16 +604,18 @@ def voice_loop():
 if __name__ == "__main__":
     # ── Single-instance guard ──────────────────
     if not acquire_instance_lock():
-        # Ping the running instance so it flashes a tray notification,
-        # then exit silently — no dialog, no "quit first" friction.
-        logger.info("Another instance is running; sending focus ping and exiting.")
+        logger.info("Another instance is running; sending focus ping.")
+        # 1. Ping the running instance → triggers its tray notification
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(2)
             s.connect(("127.0.0.1", INSTANCE_PORT))
             s.close()
         except Exception:
-            pass   # running instance may be starting up; safe to ignore
+            pass
+        # 2. Open the dashboard so the user has clear, visible feedback
+        #    (they see the browser → know the app is already running)
+        webbrowser.open(FRONTEND_URL)
         sys.exit(0)
     # ──────────────────────────────────────────
 
