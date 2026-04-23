@@ -379,8 +379,29 @@ def require_auth():
         except Exception:
             pass
 
-    # No valid token — trigger web login
-    # (internet is guaranteed at this point)
+        # Access token rejected — try silent refresh before falling back to browser
+        logger.info("Access token invalid at startup; trying silent refresh.")
+        if try_silent_refresh():
+            refreshed = load_token()
+            try:
+                r = requests.get(
+                    f"{RAILWAY_URL}/auth/validate",
+                    headers={"Authorization": f"Bearer {refreshed}"},
+                    timeout=5
+                )
+                if r.status_code == 200 and r.json().get('allowed'):
+                    logger.info("Startup silent refresh succeeded — no browser needed.")
+                    safe_notify("Session renewed", "Xvoice is ready. Press F8 to dictate.")
+                    return True
+            except Exception:
+                pass
+
+    # Must do full browser login — tell the user so they know why F8 is quiet
+    logger.info("Opening browser for re-authentication.")
+    safe_notify(
+        "Sign in required — check your browser to reconnect.",
+        "Xvoice"
+    )
     webbrowser.open(f"{FRONTEND_URL}/connect-desktop")
 
     server = HTTPServer(('127.0.0.1', LOCAL_PORT), AuthHandler)
@@ -388,8 +409,7 @@ def require_auth():
     while not auth_success:
         server.handle_request()
 
-    if tray_icon:
-        safe_notify("Connected!", "Xvoice is ready. Press F8 to dictate.")
+    safe_notify("Connected!", "Xvoice is ready. Press F8 to dictate.")
     return True
 
 # ─────────────────────────────────────────────
@@ -430,6 +450,7 @@ KEY_OBJ = _to_key(HOTKEY)
 def on_press(key):
     global hotkey_pressed
     if key == KEY_OBJ:
+        logger.info("F8 pressed")
         hotkey_pressed = True
 
 def on_release(key):
@@ -437,12 +458,29 @@ def on_release(key):
     if key == KEY_OBJ:
         hotkey_pressed = False
 
-try:
-    listener = pk.Listener(on_press=on_press, on_release=on_release)
-    listener.start()
-except Exception as e:
-    logger.warning(f"Keyboard listener failed to start: {e}")
-    listener = None
+# ─────────────────────────────────────────────
+#   Self-healing keyboard listener
+#   Restarts automatically if pynput ever dies
+#   (e.g. after screen-lock, session switch, or
+#   a driver hiccup on startup)
+# ─────────────────────────────────────────────
+
+def _listener_watchdog():
+    """Keeps the pynput listener alive. If it ever stops for any reason
+    (crash, OS session event, etc.) it restarts after a short delay."""
+    while True:
+        try:
+            logger.info("Starting keyboard listener…")
+            with pk.Listener(on_press=on_press, on_release=on_release) as lst:
+                lst.join()          # blocks until the listener thread exits
+        except Exception as e:
+            logger.error(f"Keyboard listener crashed: {e}")
+        logger.warning("Keyboard listener stopped — restarting in 2 s…")
+        global hotkey_pressed
+        hotkey_pressed = False          # clear stale press state on restart
+        time.sleep(2)
+
+threading.Thread(target=_listener_watchdog, daemon=True).start()
 
 def wait_hotkey(_):
     while not hotkey_pressed:
@@ -580,26 +618,38 @@ def transcribe_audio(audio_file):
 # ─────────────────────────────────────────────
 
 def voice_loop():
-    """Runs the F8 recording loop in a background thread."""
+    """Runs the F8 recording loop in a background thread.
+    An outer watchdog catches any crash, logs it, and restarts automatically
+    so the thread never dies silently and leaves the app a zombie."""
     global need_reauth, auth_success
-    require_auth()
-    while True:
-        # Re-auth if the token expired and silent refresh also failed
-        if need_reauth:
-            need_reauth = False
-            auth_success = False    # MUST reset so the login server loop actually runs
-            logger.info("Re-authenticating after session expiry.")
+    while True:                          # ── watchdog: restart on any crash ──
+        try:
             require_auth()
+            while True:
+                # Re-auth if the token expired and silent refresh also failed
+                if need_reauth:
+                    need_reauth = False
+                    auth_success = False    # reset so login server loop runs
+                    logger.info("Re-authenticating after session expiry.")
+                    require_auth()
 
-        has_speech = record_audio(RAW_FILE)
-        if not has_speech:
-            continue
-        if os.path.exists(RAW_FILE):
-            ok = normalize_audio(RAW_FILE, NORM_FILE)
-            transcribe_audio(NORM_FILE if ok else RAW_FILE)
-            for f in (RAW_FILE, NORM_FILE):
-                if os.path.exists(f):
-                    os.remove(f)
+                has_speech = record_audio(RAW_FILE)
+                if not has_speech:
+                    continue
+                if os.path.exists(RAW_FILE):
+                    ok = normalize_audio(RAW_FILE, NORM_FILE)
+                    transcribe_audio(NORM_FILE if ok else RAW_FILE)
+                    for f in (RAW_FILE, NORM_FILE):
+                        if os.path.exists(f):
+                            os.remove(f)
+
+        except Exception as e:
+            logger.error(f"voice_loop crashed: {e}. Restarting in 5 s…")
+            safe_notify("Xvoice restarting", "An error occurred — recovering automatically.")
+            time.sleep(5)
+            # Reset flags so require_auth() runs fresh on restart
+            auth_success = False
+            need_reauth  = False
 
 if __name__ == "__main__":
     # ── Single-instance guard ──────────────────
