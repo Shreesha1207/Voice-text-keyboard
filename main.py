@@ -10,6 +10,7 @@ import time
 import threading
 import webbrowser
 import socket
+import tempfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
 import pystray
@@ -32,8 +33,8 @@ FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 16000
 CHUNK = 480
-RAW_FILE = "temp_raw.wav"
-NORM_FILE = "temp_norm.wav"
+# Temp dir used for per-recording unique files (see get_temp_files())
+_TMPDIR = tempfile.gettempdir()
 
 if sys.platform == "win32":
     CONFIG_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Xvoice")
@@ -116,6 +117,7 @@ def _focus_listener_thread():
 # ─────────────────────────────────────────────
 
 import logging
+from logging.handlers import RotatingFileHandler
 
 if sys.platform == "win32":
     LOG_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Xvoice")
@@ -128,14 +130,21 @@ os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "xvoice.log")
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,          # INFO not DEBUG — suppresses internal HTTP noise
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        RotatingFileHandler(
+            LOG_FILE, encoding="utf-8",
+            maxBytes=5 * 1024 * 1024,   # 5 MB per file
+            backupCount=2               # keep xvoice.log + 2 rotated backups
+        ),
         logging.StreamHandler(sys.stdout),
     ]
 )
 logger = logging.getLogger("xvoice")
+# Silence the noisy HTTP debug output from the requests/urllib3 libraries
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
 logger.info(f"Xvoice starting. Platform: {sys.platform}")
 logger.info(f"Log file: {LOG_FILE}")
 
@@ -406,8 +415,16 @@ def require_auth():
 
     server = HTTPServer(('127.0.0.1', LOCAL_PORT), AuthHandler)
     server.timeout = 1
+    last_reminder = time.time()
     while not auth_success:
         server.handle_request()
+        # Remind every 30 s so the user doesn't wonder why F8 is silent
+        if time.time() - last_reminder > 30:
+            safe_notify(
+                "Still waiting — please sign in via your browser.",
+                "Xvoice"
+            )
+            last_reminder = time.time()
 
     safe_notify("Connected!", "Xvoice is ready. Press F8 to dictate.")
     return True
@@ -450,7 +467,8 @@ KEY_OBJ = _to_key(HOTKEY)
 def on_press(key):
     global hotkey_pressed
     if key == KEY_OBJ:
-        logger.info("F8 pressed")
+        if not hotkey_pressed:          # only log the initial press, not key-repeat
+            logger.info("F8 pressed")
         hotkey_pressed = True
 
 def on_release(key):
@@ -492,7 +510,11 @@ def is_pressed(_):
 def write_text(text):
     pk.Controller().type(text)
 
-vad = webrtcvad.Vad(1)
+try:
+    vad = webrtcvad.Vad(1)
+except Exception as e:
+    logger.error(f"webrtcvad failed to initialise: {e}. VAD disabled — all audio will be captured.")
+    vad = None
 
 # ─────────────────────────────────────────────
 #   Audio pipeline
@@ -543,7 +565,7 @@ def record_audio(output_filename):
     while is_pressed(HOTKEY):
         try:
             data = stream.read(CHUNK, exception_on_overflow=False)
-            if vad.is_speech(data, RATE):
+            if vad is None or vad.is_speech(data, RATE):
                 frames.append(data)
         except IOError:
             pass
@@ -566,7 +588,13 @@ def record_audio(output_filename):
 
 def normalize_audio(input_file, output_file):
     try:
-        ffmpeg = os.path.join(os.getcwd(), "ffmpeg.exe") if sys.platform == "win32" else "ffmpeg"
+        # Use the exe's own directory for ffmpeg when frozen, else PATH
+        if getattr(sys, 'frozen', False):
+            ffmpeg = os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe")
+        elif sys.platform == "win32":
+            ffmpeg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg.exe")
+        else:
+            ffmpeg = "ffmpeg"
         subprocess.run(
             [ffmpeg, "-y", "-i", input_file,
              "-af", "loudnorm=I=-16:LRA=11:TP=-1.5", "-ar", "16000", output_file],
@@ -613,6 +641,19 @@ def transcribe_audio(audio_file):
     except Exception as e:
         safe_notify("Connection error", str(e)[:80])
 
+def get_temp_files() -> tuple[str, str]:
+    """Return two unique writable temp file paths for a single recording.
+    Using unique names per recording avoids file-lock races from:
+      - Windows Defender scanning a previous file
+      - A crash leaving a handle open
+      - ffmpeg still flushing while a new recording starts
+    """
+    raw  = tempfile.NamedTemporaryFile(delete=False, suffix=".wav", dir=_TMPDIR)
+    norm = tempfile.NamedTemporaryFile(delete=False, suffix=".wav", dir=_TMPDIR)
+    raw.close()
+    norm.close()
+    return raw.name, norm.name
+
 # ─────────────────────────────────────────────
 #   Main
 # ─────────────────────────────────────────────
@@ -633,15 +674,28 @@ def voice_loop():
                     logger.info("Re-authenticating after session expiry.")
                     require_auth()
 
-                has_speech = record_audio(RAW_FILE)
+                raw_file, norm_file = get_temp_files()   # unique per recording
+
+                has_speech = record_audio(raw_file)
                 if not has_speech:
+                    # No audio captured; clean up and wait for next press
+                    for f in (raw_file, norm_file):
+                        try:
+                            os.remove(f)
+                        except Exception:
+                            pass
                     continue
-                if os.path.exists(RAW_FILE):
-                    ok = normalize_audio(RAW_FILE, NORM_FILE)
-                    transcribe_audio(NORM_FILE if ok else RAW_FILE)
-                    for f in (RAW_FILE, NORM_FILE):
+
+                if os.path.exists(raw_file):
+                    ok = normalize_audio(raw_file, norm_file)
+                    transcribe_audio(norm_file if ok else raw_file)
+
+                for f in (raw_file, norm_file):
+                    try:
                         if os.path.exists(f):
                             os.remove(f)
+                    except Exception:
+                        pass   # file may be locked by AV scan; not fatal
 
         except Exception as e:
             logger.error(f"voice_loop crashed: {e}. Restarting in 5 s…")
