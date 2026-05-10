@@ -30,6 +30,16 @@ async def get_db():
 
 
 async def init_db():
-    """Create all tables on startup."""
+    """Create all tables on startup and handle minor schema updates."""
+    from sqlalchemy import text
     async with engine.begin() as conn:
+        # 1. Create tables if they don't exist
         await conn.run_sync(Base.metadata.create_all)
+        
+        # 2. Lazy migration: Ensure audio_duration_seconds exists in word_records
+        # Railway/Postgres supports 'ADD COLUMN IF NOT EXISTS'
+        try:
+            await conn.execute(text("ALTER TABLE word_records ADD COLUMN IF NOT EXISTS audio_duration_seconds FLOAT"))
+        except Exception as e:
+            # Log but don't block startup if migration fails (e.g. non-postgres DB during local testing)
+            print(f"Lazy migration notice: {e}")

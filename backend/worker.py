@@ -36,6 +36,19 @@ async def process_transcription(job: dict) -> dict:
     # Generate metrics
     words = len(text.split())
     chars = len(text)
+    
+    # Calculate actual audio duration from WAV file
+    import wave
+    audio_duration = 0
+    try:
+        with wave.open(filepath, "rb") as wf:
+            frames = wf.getnframes()
+            rate = wf.getframerate()
+            if rate > 0:
+                audio_duration = frames / float(rate)
+    except Exception:
+        pass
+
     duration = time.time() - start_t
     
     # Clean up file
@@ -46,6 +59,7 @@ async def process_transcription(job: dict) -> dict:
          "text": text,
          "word_count": words,
          "char_count": chars,
+         "audio_duration": audio_duration,
          "processing_time": duration
     }
 

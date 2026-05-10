@@ -30,7 +30,12 @@ async def internal_record_stats(user: User, db: AsyncSession, data: RecordWordsR
     """Internal helper to save word count and update user stats."""
     new_unlocks: list[str] = []
 
-    # 1. Update the session if one is active
+    # 1. Compute WPM if not provided
+    wpm = data.wpm
+    if wpm is None and data.audio_duration_seconds and data.audio_duration_seconds > 0:
+        wpm = data.word_count / (data.audio_duration_seconds / 60.0)
+
+    # 2. Update the session if one is active
     if data.session_id:
         stmt = select(Session).where(Session.id == data.session_id, Session.user_id == user.id)
         result = await db.execute(stmt)
@@ -38,18 +43,19 @@ async def internal_record_stats(user: User, db: AsyncSession, data: RecordWordsR
         if session:
             session.word_count += data.word_count
             session.char_count += data.char_count
-            if data.wpm:
-                if session.peak_wpm is None or data.wpm > session.peak_wpm:
-                     session.peak_wpm = data.wpm
+            if wpm:
+                if session.peak_wpm is None or wpm > session.peak_wpm:
+                     session.peak_wpm = wpm
             session.ended_at = datetime.utcnow()
 
-    # 2. Add an explicit WordRecord (for history/achievements)
+    # 3. Add an explicit WordRecord (for history/achievements)
     record = WordRecord(
         user_id=user.id,
         session_id=data.session_id,
         word_count=data.word_count,
         char_count=data.char_count,
-        wpm=data.wpm
+        wpm=wpm,
+        audio_duration_seconds=data.audio_duration_seconds
     )
     db.add(record)
 
@@ -117,10 +123,23 @@ async def get_summary(current_user: User = Depends(get_current_user), db: AsyncS
     res_sessions = await db.execute(stmt_sessions)
     total_sessions = res_sessions.scalar_one_or_none() or 0
     
-    avg_words = current_user.total_words / total_sessions if total_sessions > 0 else 0
+    # Average words per session (group by session_id in WordRecord)
+    subq = (
+        select(func.sum(WordRecord.word_count).label("session_total"))
+        .where(WordRecord.user_id == current_user.id, WordRecord.session_id != None)
+        .group_by(WordRecord.session_id)
+        .subquery()
+    )
+    stmt_avg = select(func.avg(subq.c.session_total))
+    res_avg = await db.execute(stmt_avg)
+    avg_words = res_avg.scalar_one_or_none() or 0
 
-    # Peak WPM overall
-    stmt_peak = select(func.max(Session.peak_wpm)).where(Session.user_id == current_user.id)
+    # Peak WPM overall from WordRecord with quality filters
+    stmt_peak = select(func.max(WordRecord.wpm)).where(
+        WordRecord.user_id == current_user.id,
+        WordRecord.word_count >= 10,
+        WordRecord.audio_duration_seconds >= 5
+    )
     res_peak = await db.execute(stmt_peak)
     peak_wpm = res_peak.scalar_one_or_none()
 

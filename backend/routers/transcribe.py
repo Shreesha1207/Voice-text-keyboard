@@ -69,7 +69,8 @@ async def transcribe_audio(
             word_count=result["word_count"],
             char_count=result["char_count"],
             wpm=wpm,
-            session_id=session_id
+            session_id=session_id,
+            audio_duration_seconds=result.get("audio_duration", 0)
         )
     )
 
