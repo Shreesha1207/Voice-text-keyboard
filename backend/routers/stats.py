@@ -5,6 +5,7 @@ from datetime import datetime, date, timedelta, timezone
 from typing import Optional, List
 import uuid
 import calendar
+from zoneinfo import ZoneInfo
 
 from database import get_db
 from models import User, Session, WordRecord
@@ -62,8 +63,9 @@ async def internal_record_stats(user: User, db: AsyncSession, data: RecordWordsR
     # 3. Update User's total stats
     user.total_words += data.word_count
     
-    # Update Streak Logic
-    today = datetime.now(timezone.utc).date()
+    # Update Streak Logic — use the user's local timezone so "today" is correct
+    user_tz = ZoneInfo(user.timezone or "UTC")
+    today = datetime.now(user_tz).date()
     if user.last_active_date:
         delta = today - user.last_active_date
         if delta.days == 1:
@@ -98,9 +100,15 @@ async def record_words(
 @router.get("/summary", response_model=StatsSummaryResponse)
 async def get_summary(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Get the user's dashboard stats summary"""
-    today = datetime.now(timezone.utc).date()
-    start_of_today = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc).replace(tzinfo=None)
-    start_of_week = start_of_today - timedelta(days=start_of_today.weekday())
+    # Use the user's timezone for "today" and "this week" boundaries
+    user_tz = ZoneInfo(current_user.timezone or "UTC")
+    now_local = datetime.now(user_tz)
+    today = now_local.date()
+    # Convert local midnight back to UTC for querying the DB (records are stored in UTC)
+    start_of_today_local = datetime.combine(today, datetime.min.time(), tzinfo=user_tz)
+    start_of_today = start_of_today_local.astimezone(timezone.utc).replace(tzinfo=None)
+    start_of_week_local = start_of_today_local - timedelta(days=start_of_today_local.weekday())
+    start_of_week = start_of_week_local.astimezone(timezone.utc).replace(tzinfo=None)
 
     # Words Today
     stmt_today = select(func.sum(WordRecord.word_count)).where(
@@ -218,31 +226,46 @@ async def get_daily_stats(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Return per-day word counts for the given month (YYYY-MM)."""
+    """Return per-day word counts for the given month (YYYY-MM).
+    Uses the user's timezone to correctly group records into local calendar days."""
     # Validate and parse the month parameter
     try:
-        month_start = datetime.strptime(month, "%Y-%m").replace(tzinfo=timezone.utc)
+        parsed_month = datetime.strptime(month, "%Y-%m")
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid month format. Use YYYY-MM.")
 
-    # Calculate inclusive date range for the requested month
-    year, month_num = month_start.year, month_start.month
+    # Use user's timezone for date boundaries
+    user_tz = ZoneInfo(current_user.timezone or "UTC")
+    year, month_num = parsed_month.year, parsed_month.month
     last_day = calendar.monthrange(year, month_num)[1]
-    month_end = month_start.replace(day=last_day, hour=23, minute=59, second=59)
 
-    # Group WordRecords by date (cast timestamp to DATE) for this user within the month
+    # Local month boundaries → converted to UTC for DB queries
+    month_start_local = datetime(year, month_num, 1, tzinfo=user_tz)
+    month_end_local = datetime(year, month_num, last_day, 23, 59, 59, tzinfo=user_tz)
+    month_start_utc = month_start_local.astimezone(timezone.utc).replace(tzinfo=None)
+    month_end_utc = month_end_local.astimezone(timezone.utc).replace(tzinfo=None)
+
+    # Use PostgreSQL's AT TIME ZONE to convert UTC records to user's local date for grouping
+    from sqlalchemy import text, literal_column
+    tz_str = current_user.timezone or "UTC"
+
+    local_date = cast(
+        literal_column(f"recorded_at AT TIME ZONE 'UTC' AT TIME ZONE '{tz_str}'"),
+        Date
+    ).label("day")
+
     stmt = (
         select(
-            cast(WordRecord.recorded_at, Date).label("day"),
+            local_date,
             func.sum(WordRecord.word_count).label("total")
         )
         .where(
             WordRecord.user_id == current_user.id,
-            WordRecord.recorded_at >= month_start.replace(tzinfo=None),
-            WordRecord.recorded_at <= month_end.replace(tzinfo=None)
+            WordRecord.recorded_at >= month_start_utc,
+            WordRecord.recorded_at <= month_end_utc
         )
-        .group_by(cast(WordRecord.recorded_at, Date))
-        .order_by(cast(WordRecord.recorded_at, Date))
+        .group_by(local_date)
+        .order_by(local_date)
     )
     result = await db.execute(stmt)
     rows = result.all()

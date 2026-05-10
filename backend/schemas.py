@@ -55,6 +55,7 @@ class UserOut(BaseModel):
     longest_streak: int
     is_leaderboard_opt_in: bool
     tier: str
+    timezone: str = "UTC"
 
     model_config = {"from_attributes": True}
 

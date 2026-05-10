@@ -25,6 +25,7 @@ async def get_current_user(
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
         token_type: str = payload.get("type")
+        token_ver: int = payload.get("ver", 0)
         if user_id is None or token_type != "access":
             raise credentials_exception
     except JWTError:
@@ -36,6 +37,15 @@ async def get_current_user(
 
     if user is None:
         raise credentials_exception
+
+    # Cross-device logout: reject tokens issued before the latest logout
+    if token_ver != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session invalidated (logged out from another device)",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     return user
 
 async def get_current_active_user(

@@ -39,8 +39,8 @@ async def register(user_data: UserRegister, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(new_user)
 
-    access_token = create_access_token(subject=str(new_user.id))
-    refresh_token = create_refresh_token(subject=str(new_user.id))
+    access_token = create_access_token(subject=str(new_user.id), token_version=new_user.token_version)
+    refresh_token = create_refresh_token(subject=str(new_user.id), token_version=new_user.token_version)
 
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
@@ -56,8 +56,8 @@ async def login(user_data: UserLogin, db: AsyncSession = Depends(get_db)):
     if not verify_password(user_data.password, user.password_hash):
         raise HTTPException(status_code=400, detail="Incorrect email or password")
 
-    access_token = create_access_token(subject=str(user.id))
-    refresh_token = create_refresh_token(subject=str(user.id))
+    access_token = create_access_token(subject=str(user.id), token_version=user.token_version)
+    refresh_token = create_refresh_token(subject=str(user.id), token_version=user.token_version)
 
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
@@ -67,14 +67,24 @@ async def refresh_token(refresh_data: RefreshRequest, db: AsyncSession = Depends
         payload = jwt.decode(refresh_data.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("sub")
         token_type = payload.get("type")
+        token_ver = payload.get("ver", 0)
         if user_id is None or token_type != "refresh":
             raise HTTPException(status_code=401, detail="Invalid refresh token")
             
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    access_token = create_access_token(subject=user_id)
-    new_refresh_token = create_refresh_token(subject=user_id)
+    # Validate token_version against DB — prevents revoked refresh tokens from working
+    stmt = select(User).where(User.id == uuid.UUID(user_id))
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    if token_ver != user.token_version:
+        raise HTTPException(status_code=401, detail="Session invalidated (logged out)")
+
+    access_token = create_access_token(subject=user_id, token_version=user.token_version)
+    new_refresh_token = create_refresh_token(subject=user_id, token_version=user.token_version)
 
     return TokenResponse(access_token=access_token, refresh_token=new_refresh_token)
 
@@ -140,8 +150,8 @@ async def google_auth(auth_data: GoogleAuthCode, db: AsyncSession = Depends(get_
         await db.commit()
         await db.refresh(user)
 
-    access_token = create_access_token(subject=str(user.id))
-    refresh_token = create_refresh_token(subject=str(user.id))
+    access_token = create_access_token(subject=str(user.id), token_version=user.token_version)
+    refresh_token = create_refresh_token(subject=str(user.id), token_version=user.token_version)
 
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
@@ -181,3 +191,33 @@ async def validate_status(current_user: User = Depends(get_current_user)):
 async def get_me(current_user: User = Depends(get_current_user)):
     """Get current user profile"""
     return current_user
+
+@router.post("/logout")
+async def logout(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    """Logout from all devices by incrementing token_version.
+    All existing access & refresh tokens become invalid immediately."""
+    current_user.token_version += 1
+    await db.commit()
+    return {"status": "ok", "detail": "Logged out from all devices"}
+
+@router.patch("/timezone")
+async def update_timezone(
+    data: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update the user's timezone preference (IANA format, e.g. 'Asia/Kolkata')."""
+    tz_name = data.get("timezone", "").strip()
+    if not tz_name:
+        raise HTTPException(status_code=400, detail="timezone field is required")
+
+    # Validate the timezone string
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    try:
+        ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, KeyError):
+        raise HTTPException(status_code=400, detail=f"Invalid timezone: {tz_name}")
+
+    current_user.timezone = tz_name
+    await db.commit()
+    return {"status": "ok", "timezone": tz_name}

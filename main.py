@@ -174,9 +174,20 @@ def _open_download(icon, item):
     webbrowser.open(f"{FRONTEND_URL}/download")
 
 def _logout(icon, item):
+    # Invalidate all tokens server-side (logs out browser dashboard too)
+    token = load_token()
+    if token:
+        try:
+            requests.post(
+                f"{RAILWAY_URL}/auth/logout",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=5
+            )
+        except Exception:
+            pass  # proceed even if network is down
     if os.path.exists(CONFIG_FILE):
         os.remove(CONFIG_FILE)
-    safe_notify("Logged out", "Xvoice")
+    safe_notify("Logged out from all devices", "Xvoice")
 
 def _quit_app(icon, item):
     icon.stop()
@@ -384,6 +395,7 @@ def require_auth():
                 timeout=5
             )
             if r.status_code == 200 and r.json().get('allowed'):
+                _sync_timezone()
                 return True
         except Exception:
             pass
@@ -401,6 +413,7 @@ def require_auth():
                 if r.status_code == 200 and r.json().get('allowed'):
                     logger.info("Startup silent refresh succeeded — no browser needed.")
                     safe_notify("Session renewed", "Xvoice is ready. Press F8 to dictate.")
+                    _sync_timezone()
                     return True
             except Exception:
                 pass
@@ -427,7 +440,45 @@ def require_auth():
             last_reminder = time.time()
 
     safe_notify("Connected!", "Xvoice is ready. Press F8 to dictate.")
+    _sync_timezone()
     return True
+
+def _sync_timezone():
+    """Send the system's IANA timezone to the backend so stats use the correct local time."""
+    token = load_token()
+    if not token:
+        return
+    try:
+        # Python 3.9+ has zoneinfo; detect system IANA tz name
+        import datetime as _dt
+        local_tz = _dt.datetime.now().astimezone().tzinfo
+        tz_name = str(local_tz)
+        # On Windows, astimezone().tzinfo gives an offset, not IANA name.
+        # Try tzlocal for a proper IANA name.
+        try:
+            from tzlocal import get_localzone
+            tz_name = str(get_localzone())
+        except ImportError:
+            # Fallback: use time.timezone offset to guess (less precise)
+            import time as _time
+            offset_hours = -_time.timezone // 3600
+            # Map common Indian offset
+            tz_map = {
+                5: "Asia/Kolkata", 0: "UTC", 1: "Europe/London",
+                -5: "America/New_York", -8: "America/Los_Angeles",
+                8: "Asia/Shanghai", 9: "Asia/Tokyo",
+            }
+            tz_name = tz_map.get(offset_hours, "UTC")
+
+        requests.patch(
+            f"{RAILWAY_URL}/auth/timezone",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"timezone": tz_name},
+            timeout=5
+        )
+        logger.info(f"Timezone synced: {tz_name}")
+    except Exception as e:
+        logger.debug(f"Timezone sync skipped: {e}")
 
 # ─────────────────────────────────────────────
 #   Startup registration

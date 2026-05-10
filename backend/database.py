@@ -40,6 +40,8 @@ async def init_db():
         # Railway/Postgres supports 'ADD COLUMN IF NOT EXISTS'
         try:
             await conn.execute(text("ALTER TABLE word_records ADD COLUMN IF NOT EXISTS audio_duration_seconds FLOAT"))
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0"))
+            await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS timezone VARCHAR(50) DEFAULT 'UTC'"))
         except Exception as e:
             # Log but don't block startup if migration fails (e.g. non-postgres DB during local testing)
             print(f"Lazy migration notice: {e}")
