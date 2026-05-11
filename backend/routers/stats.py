@@ -142,14 +142,32 @@ async def get_summary(current_user: User = Depends(get_current_user), db: AsyncS
     res_avg = await db.execute(stmt_avg)
     avg_words = res_avg.scalar_one_or_none() or 0
 
-    # Peak WPM overall from WordRecord with quality filters
-    stmt_peak = select(func.max(WordRecord.wpm)).where(
-        WordRecord.user_id == current_user.id,
-        WordRecord.word_count >= 10,
-        WordRecord.audio_duration_seconds >= 5
+    # Peak WPM overall: Highest WPM achieved across any entire session.
+    # We calculate each session's WPM as (Total Words / Total Minutes) and take the max.
+    subq_wpm = (
+        select(
+            (
+                func.sum(WordRecord.word_count) / 
+                (func.nullif(func.sum(WordRecord.audio_duration_seconds), 0) / 60.0)
+            ).label("session_wpm")
+        )
+        .where(
+            WordRecord.user_id == current_user.id,
+            WordRecord.session_id.is_not(None)
+        )
+        .group_by(WordRecord.session_id)
+        .having(
+            func.sum(WordRecord.word_count) >= 10,
+            func.sum(WordRecord.audio_duration_seconds) >= 15
+        )
+        .subquery()
     )
+    stmt_peak = select(func.max(subq_wpm.c.session_wpm))
     res_peak = await db.execute(stmt_peak)
     peak_wpm = res_peak.scalar_one_or_none()
+    
+    if peak_wpm is not None:
+        peak_wpm = round(float(peak_wpm), 1)
 
     # Most productive weekday by cumulative words over all recorded history
     # Using SQL aggregation for real-time performance
@@ -245,12 +263,13 @@ async def get_daily_stats(
     month_start_utc = month_start_local.astimezone(timezone.utc).replace(tzinfo=None)
     month_end_utc = month_end_local.astimezone(timezone.utc).replace(tzinfo=None)
 
-    # Use PostgreSQL's AT TIME ZONE to convert UTC records to user's local date for grouping
-    from sqlalchemy import text, literal_column
+    # Use idiomatic SQLAlchemy func.timezone to convert UTC to user's local timezone
     tz_str = current_user.timezone or "UTC"
 
+    # timezone('UTC', recorded_at) tells Postgres the naive timestamp is UTC.
+    # timezone(tz_str, ...) then converts that absolute time to the target timezone's local time.
     local_date = cast(
-        literal_column(f"recorded_at AT TIME ZONE 'UTC' AT TIME ZONE '{tz_str}'"),
+        func.timezone(tz_str, func.timezone('UTC', WordRecord.recorded_at)),
         Date
     ).label("day")
 
@@ -271,7 +290,7 @@ async def get_daily_stats(
     rows = result.all()
 
     days: List[DailyStat] = [
-        DailyStat(date=str(row.day), words=int(row.total))
+        DailyStat(date=str(row.day), words=int(row.total or 0))
         for row in rows
     ]
 
