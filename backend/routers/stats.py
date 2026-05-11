@@ -263,36 +263,31 @@ async def get_daily_stats(
     month_start_utc = month_start_local.astimezone(timezone.utc).replace(tzinfo=None)
     month_end_utc = month_end_local.astimezone(timezone.utc).replace(tzinfo=None)
 
-    # Use idiomatic SQLAlchemy func.timezone to convert UTC to user's local timezone
-    tz_str = current_user.timezone or "UTC"
-
-    # timezone('UTC', recorded_at) tells Postgres the naive timestamp is UTC.
-    # timezone(tz_str, ...) then converts that absolute time to the target timezone's local time.
-    local_date = cast(
-        func.timezone(tz_str, func.timezone('UTC', WordRecord.recorded_at)),
-        Date
-    ).label("day")
-
-    stmt = (
-        select(
-            local_date,
-            func.sum(WordRecord.word_count).label("total")
-        )
-        .where(
-            WordRecord.user_id == current_user.id,
-            WordRecord.recorded_at >= month_start_utc,
-            WordRecord.recorded_at <= month_end_utc
-        )
-        .group_by(local_date)
-        .order_by(local_date)
+    # Use Python to group records to avoid Postgres timezone compilation errors.
+    # We just fetch all records for the month and group them safely in memory.
+    stmt = select(WordRecord).where(
+        WordRecord.user_id == current_user.id,
+        WordRecord.recorded_at >= month_start_utc,
+        WordRecord.recorded_at <= month_end_utc
     )
     result = await db.execute(stmt)
-    rows = result.all()
+    records = result.scalars().all()
+
+    from collections import defaultdict
+    daily_totals = defaultdict(int)
+
+    for r in records:
+        # r.recorded_at is naive UTC from the DB
+        utc_dt = r.recorded_at.replace(tzinfo=timezone.utc)
+        local_dt = utc_dt.astimezone(user_tz)
+        local_date_str = local_dt.date().isoformat()
+        daily_totals[local_date_str] += r.word_count
 
     days: List[DailyStat] = [
-        DailyStat(date=str(row.day), words=int(row.total or 0))
-        for row in rows
+        DailyStat(date=date_str, words=count)
+        for date_str, count in sorted(daily_totals.items())
     ]
+
 
     best_day: Optional[DailyStat] = None
     if days:
