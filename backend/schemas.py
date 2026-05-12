@@ -39,7 +39,11 @@ class ValidateResponse(BaseModel):
     tier: str
     trial_days_remaining: Optional[int] = None
     user_id: str
+    custom_hotkey: str = "f8"
 
+
+class HotkeyUpdate(BaseModel):
+    hotkey: str = Field(..., max_length=20)
 
 # ─── User ─────────────────────────────────────────────────────────────────────
 
@@ -56,6 +60,7 @@ class UserOut(BaseModel):
     is_leaderboard_opt_in: bool
     tier: str
     timezone: str = "UTC"
+    custom_hotkey: str = "f8"
 
     model_config = {"from_attributes": True}
 

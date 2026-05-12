@@ -229,7 +229,7 @@ def start_tray():
     )
 
     try:
-        tray_icon = pystray.Icon("xvoice", image, "Xvoice - Press F8 to dictate", menu)
+        tray_icon = pystray.Icon("xvoice", image, f"Xvoice - Press {HOTKEY.upper()} to dictate", menu)
         tray_icon.run()
     except KeyboardInterrupt:
         os._exit(0)
@@ -395,6 +395,7 @@ def require_auth():
                 timeout=5
             )
             if r.status_code == 200 and r.json().get('allowed'):
+                set_dynamic_hotkey(r.json().get('custom_hotkey', 'f8'))
                 _sync_timezone()
                 return True
         except Exception:
@@ -412,7 +413,8 @@ def require_auth():
                 )
                 if r.status_code == 200 and r.json().get('allowed'):
                     logger.info("Startup silent refresh succeeded — no browser needed.")
-                    safe_notify("Session renewed", "Xvoice is ready. Press F8 to dictate.")
+                    set_dynamic_hotkey(r.json().get('custom_hotkey', 'f8'))
+                    safe_notify("Session renewed", f"Xvoice is ready. Press {HOTKEY.upper()} to dictate.")
                     _sync_timezone()
                     return True
             except Exception:
@@ -431,7 +433,7 @@ def require_auth():
     last_reminder = time.time()
     while not auth_success:
         server.handle_request()
-        # Remind every 30 s so the user doesn't wonder why F8 is silent
+        # Remind every 30 s so the user doesn't wonder why nothing works
         if time.time() - last_reminder > 30:
             safe_notify(
                 "Still waiting — please sign in via your browser.",
@@ -439,7 +441,21 @@ def require_auth():
             )
             last_reminder = time.time()
 
-    safe_notify("Connected!", "Xvoice is ready. Press F8 to dictate.")
+    # Now that we are logged in, fetch the hotkey
+    token = load_token()
+    if token:
+        try:
+            r = requests.get(
+                f"{RAILWAY_URL}/auth/validate",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=5
+            )
+            if r.status_code == 200:
+                set_dynamic_hotkey(r.json().get('custom_hotkey', 'f8'))
+        except Exception:
+            pass
+
+    safe_notify("Connected!", f"Xvoice is ready. Press {HOTKEY.upper()} to dictate.")
     _sync_timezone()
     return True
 
@@ -509,11 +525,27 @@ def setup_startup():
 hotkey_pressed = False
 
 def _to_key(s):
-    if s.lower().startswith('f') and s[1:].isdigit():
-        return getattr(pk.Key, s.lower())
+    s = s.lower().replace(" ", "_")
+    
+    # Map frontend human-readable strings to pynput Key attributes
+    mapping = {
+        "right_alt": "alt_r", "left_alt": "alt_l",
+        "right_ctrl": "ctrl_r", "left_ctrl": "ctrl_l",
+        "right_shift": "shift_r", "left_shift": "shift_l",
+    }
+    s = mapping.get(s, s)
+
+    if hasattr(pk.Key, s):
+        return getattr(pk.Key, s)
     return pk.KeyCode.from_char(s)
 
 KEY_OBJ = _to_key(HOTKEY)
+
+def set_dynamic_hotkey(new_key):
+    global HOTKEY, KEY_OBJ
+    if new_key:
+        HOTKEY = new_key.lower()
+        KEY_OBJ = _to_key(HOTKEY)
 
 def on_press(key):
     global hotkey_pressed

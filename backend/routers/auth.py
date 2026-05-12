@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 import httpx
@@ -10,7 +10,7 @@ from database import get_db
 from models import User, SubscriptionStatus
 from schemas import (
     UserRegister, UserLogin, TokenResponse, RefreshRequest, ValidateResponse,
-    GoogleAuthCode, UserOut
+    GoogleAuthCode, UserOut, HotkeyUpdate
 )
 from security import (
     get_password_hash, verify_password, create_access_token, create_refresh_token,
@@ -20,10 +20,12 @@ from dependencies import get_current_user
 from jose import jwt, JWTError
 from datetime import datetime, timezone
 
+from email_service import send_welcome_email
+
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
 @router.post("/register", response_model=TokenResponse)
-async def register(user_data: UserRegister, db: AsyncSession = Depends(get_db)):
+async def register(user_data: UserRegister, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     stmt = select(User).where(User.email == user_data.email)
     result = await db.execute(stmt)
     if result.scalar_one_or_none():
@@ -41,6 +43,8 @@ async def register(user_data: UserRegister, db: AsyncSession = Depends(get_db)):
 
     access_token = create_access_token(subject=str(new_user.id), token_version=new_user.token_version)
     refresh_token = create_refresh_token(subject=str(new_user.id), token_version=new_user.token_version)
+
+    background_tasks.add_task(send_welcome_email, new_user.email, new_user.display_name)
 
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
@@ -89,7 +93,7 @@ async def refresh_token(refresh_data: RefreshRequest, db: AsyncSession = Depends
     return TokenResponse(access_token=access_token, refresh_token=new_refresh_token)
 
 @router.post("/google", response_model=TokenResponse)
-async def google_auth(auth_data: GoogleAuthCode, db: AsyncSession = Depends(get_db)):
+async def google_auth(auth_data: GoogleAuthCode, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     # Very basic Google OAuth verification - needs real google client secret in prod
     client_id = os.getenv("GOOGLE_CLIENT_ID")
     client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
@@ -150,6 +154,9 @@ async def google_auth(auth_data: GoogleAuthCode, db: AsyncSession = Depends(get_
         await db.commit()
         await db.refresh(user)
 
+        # Send welcome email for new Google signups
+        background_tasks.add_task(send_welcome_email, user.email, user.display_name)
+
     access_token = create_access_token(subject=str(user.id), token_version=user.token_version)
     refresh_token = create_refresh_token(subject=str(user.id), token_version=user.token_version)
 
@@ -184,7 +191,8 @@ async def validate_status(current_user: User = Depends(get_current_user)):
         reason=reason,
         tier=current_user.tier,
         trial_days_remaining=trial_remaining,
-        user_id=str(current_user.id)
+        user_id=str(current_user.id),
+        custom_hotkey=current_user.custom_hotkey
     )
 
 @router.get("/me", response_model=UserOut)
@@ -221,3 +229,35 @@ async def update_timezone(
     current_user.timezone = tz_name
     await db.commit()
     return {"status": "ok", "timezone": tz_name}
+
+@router.patch("/hotkey")
+async def update_hotkey(
+    data: HotkeyUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update custom push-to-talk hotkey. Only available for Pro users."""
+    if current_user.tier != "paid":
+        raise HTTPException(status_code=403, detail="Custom hotkeys are a Pro feature.")
+        
+    hotkey = data.hotkey.strip().lower()
+    
+    # Strict validation to prevent the desktop app from crashing
+    # These are the safe, commonly used keys supported by the 'keyboard' library
+    allowed_keys = {
+        "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+        "ctrl", "alt", "shift", "space", "tab", "caps lock", "esc", "enter",
+        "left_ctrl", "right_ctrl", "left_alt", "right_alt", "left_shift", "right_shift",
+        "`", "~", "insert", "delete", "home", "end", "page up", "page down",
+        "up", "down", "left", "right"
+    }
+    
+    if hotkey not in allowed_keys and not (len(hotkey) == 1 and hotkey.isalnum()):
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Invalid hotkey. Must be a single letter/number or a standard key like f8, ctrl, alt, shift."
+        )
+    
+    current_user.custom_hotkey = hotkey
+    await db.commit()
+    return {"status": "ok", "hotkey": hotkey}

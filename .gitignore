@@ -1,6 +1,8 @@
 # Environment & secrets
 .env
 backend/.env
+backend\.env.example
+.gitignore
 
 # Python cache
 __pycache__/
@@ -22,6 +24,7 @@ temp_norm.wav
 # Test artifacts
 backend/test_results.txt
 backend/test_endpoints.py
+C:\Users\SHREESHA012\OneDrive\Desktop\Projects\Voice-text-keyboard\backend\.gitignore
 
 # Frontend (managed separately via Lovable)
 frontend/

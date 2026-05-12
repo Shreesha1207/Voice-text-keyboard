@@ -10,6 +10,8 @@ import enum
 class SubscriptionStatus(str, enum.Enum):
     TRIAL = "trial"
     PAID = "paid"
+    PAST_DUE = "past_due"
+    CANCELED = "canceled"
     EXPIRED = "expired"
 
 
@@ -33,6 +35,14 @@ class User(Base):
     display_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     timezone: Mapped[str] = mapped_column(String(50), default="UTC", server_default="UTC")
+    
+    # Stripe Billing fields
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    current_period_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    trial_expired_email_sent: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    custom_hotkey: Mapped[str] = mapped_column(String(20), default="f8", server_default="'f8'")
 
     sessions: Mapped[list["Session"]] = relationship("Session", back_populates="user")
     word_records: Mapped[list["WordRecord"]] = relationship("WordRecord", back_populates="user")
@@ -48,6 +58,10 @@ class User(Base):
     def tier(self) -> str:
         if self.subscription_status == SubscriptionStatus.PAID:
             return "paid"
+        if self.subscription_status == SubscriptionStatus.CANCELED:
+            # If canceled but still in the active billing period, they remain "paid" tier
+            if self.current_period_end and self.current_period_end > datetime.utcnow():
+                return "paid"
         return "trial"
 
 

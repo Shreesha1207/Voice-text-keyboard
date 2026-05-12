@@ -6,6 +6,11 @@ import logging
 from openai import AsyncOpenAI
 import redis.asyncio as redis
 from queue_manager import REDIS_URL, Priority
+from database import AsyncSessionLocal
+from models import User, SubscriptionStatus
+from sqlalchemy import select
+from datetime import datetime, timedelta
+from email_service import send_trial_expired_email
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", "sk-mock-key"))
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
@@ -96,6 +101,36 @@ async def worker_loop():
             logger.exception("Worker iteration error")
             await asyncio.sleep(1)
             
+async def trial_cron_loop():
+    logger.info("Started background trial expiry checker.")
+    while True:
+        try:
+            async with AsyncSessionLocal() as db:
+                # 14 days ago
+                cutoff = datetime.utcnow() - timedelta(days=14)
+                
+                stmt = select(User).where(
+                    User.subscription_status == SubscriptionStatus.TRIAL,
+                    User.trial_expired_email_sent == False,
+                    User.trial_start_at <= cutoff
+                )
+                result = await db.execute(stmt)
+                expired_users = result.scalars().all()
+                
+                for user in expired_users:
+                    success = await asyncio.to_thread(send_trial_expired_email, user.email, user.display_name)
+                    if success:
+                        user.trial_expired_email_sent = True
+                        
+                if expired_users:
+                    await db.commit()
+                    
+        except Exception as e:
+            logger.exception("Trial cron error")
+            
+        # Run check every hour
+        await asyncio.sleep(3600)
             
 def start_worker():
     asyncio.create_task(worker_loop())
+    asyncio.create_task(trial_cron_loop())
