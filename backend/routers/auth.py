@@ -246,9 +246,9 @@ async def update_hotkey(
     # These are the safe, commonly used keys supported by the 'keyboard' library
     allowed_keys = {
         "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
-        "ctrl", "alt", "shift", "space", "tab", "caps lock", "esc", "enter",
+        "ctrl", "alt", "shift", "space", "tab", "caps lock", "caps_lock", "esc", "enter",
         "left_ctrl", "right_ctrl", "left_alt", "right_alt", "left_shift", "right_shift",
-        "`", "~", "insert", "delete", "home", "end", "page up", "page down",
+        "`", "~", "insert", "delete", "home", "end", "page up", "page_down", "page_up", "page down",
         "up", "down", "left", "right"
     }
     

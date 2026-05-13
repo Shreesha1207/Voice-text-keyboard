@@ -395,7 +395,8 @@ def require_auth():
                 timeout=5
             )
             if r.status_code == 200 and r.json().get('allowed'):
-                set_dynamic_hotkey(r.json().get('custom_hotkey', 'f8'))
+                received_key = r.json().get('custom_hotkey', 'f8')
+                set_dynamic_hotkey(received_key)
                 _sync_timezone()
                 return True
         except Exception:
@@ -412,8 +413,8 @@ def require_auth():
                     timeout=5
                 )
                 if r.status_code == 200 and r.json().get('allowed'):
-                    logger.info("Startup silent refresh succeeded — no browser needed.")
-                    set_dynamic_hotkey(r.json().get('custom_hotkey', 'f8'))
+                    received_key = r.json().get('custom_hotkey', 'f8')
+                    set_dynamic_hotkey(received_key)
                     safe_notify("Session renewed", f"Xvoice is ready. Press {HOTKEY.upper()} to dictate.")
                     _sync_timezone()
                     return True
@@ -542,16 +543,19 @@ def _to_key(s):
 KEY_OBJ = _to_key(HOTKEY)
 
 def set_dynamic_hotkey(new_key):
-    global HOTKEY, KEY_OBJ
+    global HOTKEY, KEY_OBJ, tray_icon
     if new_key:
         HOTKEY = new_key.lower()
         KEY_OBJ = _to_key(HOTKEY)
+        logger.info(f"System hotkey successfully updated to: {HOTKEY.upper()}")
+        if tray_icon:
+            tray_icon.title = f"Xvoice - Press {HOTKEY.upper()} to dictate"
 
 def on_press(key):
     global hotkey_pressed
     if key == KEY_OBJ:
-        if not hotkey_pressed:          # only log the initial press, not key-repeat
-            logger.info("F8 pressed")
+        if not hotkey_pressed:
+            logger.info(f"Hotkey {HOTKEY.upper()} pressed")
         hotkey_pressed = True
 
 def on_release(key):
@@ -652,7 +656,7 @@ def record_audio(output_filename):
                 frames.append(data)
         except IOError:
             pass
-
+    
     if winsound:
         winsound.Beep(800, 100)
     stream.stop_stream()
@@ -687,28 +691,30 @@ def normalize_audio(input_file, output_file):
     except Exception:
         return False
 
-def transcribe_audio(audio_file):
+def transcribe_audio(audio_path):
     global need_reauth
     token = load_token()
-    headers = {"Authorization": f"Bearer {token}"}
+    logger.info(f"Transcribing {os.path.basename(audio_path)}...")
     try:
-        with open(audio_file, "rb") as f:
-            response = requests.post(
+        with open(audio_path, 'rb') as f:
+            r = requests.post(
                 f"{RAILWAY_URL}/transcribe",
-                headers=headers,
-                files={"file": ("audio.wav", f, "audio/wav")},
+                headers={"Authorization": f"Bearer {token}"},
+                files={'file': f},
                 timeout=30
             )
 
-        if response.status_code == 200:
-            text = response.json().get("text", "").strip()
+        if r.status_code == 200:
+            text = r.json().get('text', '').strip()
             if text:
                 write_text(text + " ")
                 if winsound:
                     winsound.Beep(1200, 50)
-        elif response.status_code == 403:
+            else:
+                logger.info("Transcription returned empty text.")
+        elif r.status_code == 403:
             safe_notify("Trial Expired", "Upgrade on the dashboard to continue.")
-        elif response.status_code == 401:
+        elif r.status_code == 401:
             logger.warning("401 received — attempting silent token refresh.")
             if try_silent_refresh():
                 # Got a fresh token; next F8 press will use it automatically
@@ -789,6 +795,7 @@ def voice_loop():
             need_reauth  = False
 
 if __name__ == "__main__":
+    
     # ── Single-instance guard ──────────────────
     if not acquire_instance_lock():
         logger.info("Another instance is running; sending focus ping.")
