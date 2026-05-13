@@ -5,6 +5,9 @@ from datetime import datetime, timedelta, timezone
 import os
 import stripe
 from uuid import UUID
+import hmac
+import hashlib
+import json
 
 from database import get_db
 from models import User, SubscriptionStatus
@@ -178,3 +181,75 @@ async def create_billing_portal(
         return {"url": session.url}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/lovable-sync")
+async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Secure sync endpoint called by Lovable Edge Functions.
+    Verifies X-Lovable-Signature to prevent spoofing.
+    """
+    payload_raw = await request.body()
+    signature = request.headers.get("X-Lovable-Signature")
+    secret = os.getenv("LOVABLE_SYNC_SECRET")
+
+    if not secret:
+        raise HTTPException(status_code=500, detail="LOVABLE_SYNC_SECRET not configured")
+
+    # 1. Verify Signature
+    expected_signature = hmac.new(
+        secret.encode(),
+        payload_raw,
+        hashlib.sha256
+    ).hexdigest()
+
+    if not hmac.compare_digest(expected_signature, signature or ""):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    # 2. Process Payload
+    try:
+        data = json.loads(payload_raw)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+        
+    email = data.get("email")
+    status_str = data.get("status")
+    
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+
+    # 3. Lookup User
+    stmt = select(User).where(User.email == email)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        return {"status": "ignored", "reason": f"User with email {email} not found in Railway DB"}
+
+    # 4. Map and Update Status
+    # active/trialing -> PAID, else map directly
+    if status_str in ["active", "trialing"]:
+        user.subscription_status = SubscriptionStatus.PAID
+    elif status_str == "past_due":
+        user.subscription_status = SubscriptionStatus.PAST_DUE
+    elif status_str == "canceled":
+        user.subscription_status = SubscriptionStatus.CANCELED
+    elif status_str == "expired":
+        user.subscription_status = SubscriptionStatus.EXPIRED
+    
+    # Update other fields
+    user.stripe_customer_id = data.get("stripe_customer_id")
+    user.stripe_subscription_id = data.get("stripe_subscription_id")
+    user.cancel_at_period_end = data.get("cancel_at_period_end", False)
+    
+    period_end = data.get("current_period_end")
+    if period_end:
+        try:
+            # Handle ISO format from Lovable (e.g. 2026-06-13T00:00:00Z)
+            # Remove Z and replace with +00:00 for fromisoformat, then strip tz for naive DateTime
+            dt = datetime.fromisoformat(period_end.replace('Z', '+00:00'))
+            user.current_period_end = dt.replace(tzinfo=None)
+        except (ValueError, TypeError):
+            pass
+
+    await db.commit()
+    return {"status": "success", "user_id": str(user.id)}
