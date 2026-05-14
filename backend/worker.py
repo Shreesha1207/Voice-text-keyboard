@@ -45,8 +45,11 @@ async def process_transcription(job: dict) -> dict:
                               trans_params["language"] = "en"
                               trans_params["prompt"] = "Transcribe the audio exactly as it sounds. If the speaker is using a language other than English, transliterate those sounds into the Latin (English) alphabet. Do not translate to English meanings.The script should be in English only. "
                          else:
-                              # Native language transcription
-                              trans_params["language"] = lang
+                              trans_params["prompt"] = (
+                                   "Transcribe the speech exactly as spoken using only English alphabet letters. "
+                                   "If the speaker uses other language, transliterate it phonetically "
+                                   "into Latin(English) script. Never output native Unicode scripts."
+                              )
 
                     logger.info(f"Step 1: Transcribing with params: { {k:v for k,v in trans_params.items() if k != 'file'} }")
                     trans_res = await client.audio.transcriptions.create(**trans_params)
