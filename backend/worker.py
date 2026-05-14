@@ -35,7 +35,7 @@ async def process_transcription(job: dict) -> dict:
                with open(filepath, "rb") as audio:
                     # Step 1: Transcription / Transliteration
                     trans_params = {
-                        "model": "gpt-4.o-transcribe",
+                        "model": "gpt-4o-transcribe",
                         "file": audio
                     }
                     
