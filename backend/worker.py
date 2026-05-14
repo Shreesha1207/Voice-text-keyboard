@@ -30,50 +30,47 @@ async def process_transcription(job: dict) -> dict:
                lang = job.get("language", "en")
                should_translate = job.get("translate", False)
                
-               with open(filepath, "rb") as audio:
-                    if should_translate:
-                         if lang == "en":
-                              # Translate to English (optimized)
-                              res = await client.audio.translations.create(
-                                  model="gpt-4o-transcribe",
-                                  file=audio
-                              )
-                              text = res.text.strip()
-                         else:
-                              # Translate to a non-English language
-                              # 1. First get the native transcription (detect language)
-                              trans_res = await client.audio.transcriptions.create(
-                                  model="gpt-4o-transcribe",
-                                  file=audio
-                              )
-                              source_text = trans_res.text.strip()
-                              
-                              # 2. Use LLM to translate to the target language
-                              chat_res = await client.chat.completions.create(
-                                  model="gpt-4o",
-                                  messages=[
-                                      {"role": "system", "content": f"You are a professional translator. Translate the user's text into the target language: {lang}. Output only the translated text."},
-                                      {"role": "user", "content": source_text}
-                                  ]
-                              )
-                              text = chat_res.choices[0].message.content.strip()
-                    else:
-                         # No translation, just transcription/transliteration
-                         if lang == "en":
-                              res = await client.audio.transcriptions.create(
-                                  model="gpt-4o-transcribe",
-                                  file=audio,
-                                  language="en",
-                                  prompt="Transcribe the audio exactly as it sounds. If the speaker is using a language other than English, transliterate those sounds into the Latin (English) alphabet. Do not translate to English meanings."
-                              )
-                         else:
-                              res = await client.audio.transcriptions.create(
-                                  model="gpt-4o-transcribe",
-                                  file=audio,
-                                  language=lang
-                              )
-                         text = res.text.strip()
+               logger.info(f"Worker Processing - Target Lang: {lang}, Translation Enabled: {should_translate}")
                
+               with open(filepath, "rb") as audio:
+                    # Step 1: Transcription / Transliteration
+                    trans_params = {
+                        "model": "gpt-4.o-transcribe",
+                        "file": audio
+                    }
+                    
+                    if not should_translate:
+                         if lang == "en":
+                              # Use the transliteration prompt for Trial/English users
+                              trans_params["language"] = "en"
+                              trans_params["prompt"] = "Transcribe the audio exactly as it sounds. If the speaker is using a language other than English, transliterate those sounds into the Latin (English) alphabet. Do not translate to English meanings."
+                         else:
+                              # Native language transcription
+                              trans_params["language"] = lang
+
+                    logger.info(f"Step 1: Transcribing with params: { {k:v for k,v in trans_params.items() if k != 'file'} }")
+                    trans_res = await client.audio.transcriptions.create(**trans_params)
+                    source_text = trans_res.text.strip()
+                    logger.info(f"Step 1 Result: '{source_text}'")
+
+                    # Step 2: Optional Translation
+                    if should_translate:
+                         logger.info(f"Step 2: Translating to {lang} via GPT-4o...")
+                         chat_res = await client.chat.completions.create(
+                             model="gpt-4o",
+                             messages=[
+                                 {
+                                     "role": "system", 
+                                     "content": f"Translate the following text into the target language: {lang}. Output only the translated text."
+                                 },
+                                 {"role": "user", "content": source_text}
+                             ]
+                         )
+                         text = chat_res.choices[0].message.content.strip()
+                         logger.info(f"Step 2 Result: '{text}'")
+                    else:
+                         text = source_text
+
           except Exception as e:
               logger.exception(f"Transcription process error for {filepath}")
               text = f"Error: {e}"
