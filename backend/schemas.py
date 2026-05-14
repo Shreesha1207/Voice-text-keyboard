@@ -40,10 +40,20 @@ class ValidateResponse(BaseModel):
     trial_days_remaining: Optional[int] = None
     user_id: str
     custom_hotkey: str = "f8"
+    preferred_language: str = "en"
+    is_translation_enabled: bool = False
 
 
 class HotkeyUpdate(BaseModel):
     hotkey: str = Field(..., max_length=20)
+
+
+class LanguageUpdate(BaseModel):
+    language: str = Field(..., max_length=10)
+
+
+class TranslationUpdate(BaseModel):
+    enabled: bool
 
 # ─── User ─────────────────────────────────────────────────────────────────────
 
@@ -61,6 +71,8 @@ class UserOut(BaseModel):
     tier: str
     timezone: str = "UTC"
     custom_hotkey: str = "f8"
+    preferred_language: str = "en"
+    is_translation_enabled: bool = False
 
     model_config = {"from_attributes": True}
 

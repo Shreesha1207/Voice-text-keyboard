@@ -18,6 +18,7 @@ router = APIRouter(prefix="/api/transcribe", tags=["Transcription"])
 async def transcribe_audio(
     file: UploadFile = File(...),
     session_id: str = Form(None),
+    language: str = Form("en"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -30,12 +31,22 @@ async def transcribe_audio(
         logger.warning(f"User {current_user.id} attempted transcription but trial expired.")
         raise HTTPException(status_code=403, detail="Trial expired. Please upgrade.")
 
+    # Premium Feature: Only paid users can choose language. 
+    # Force trial users to English regardless of what the client sent.
+    if current_user.tier != "paid":
+        language = "en"
+
     audio_bytes = await file.read()
     
     priority = Priority.PAID if current_user.tier == "paid" else Priority.TRIAL
     
     # 1. Enqueue
-    enqueue_result = await queue_manager.enqueue_request(audio_bytes, priority)
+    enqueue_result = await queue_manager.enqueue_request(
+        audio_bytes, 
+        priority, 
+        language=language,
+        translate=current_user.is_translation_enabled
+    )
     
     if "error" in enqueue_result:
         logger.error(f"Failed to enqueue transcription request: {enqueue_result['error']} for user {current_user.id}")

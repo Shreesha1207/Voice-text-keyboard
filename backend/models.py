@@ -43,6 +43,8 @@ class User(Base):
     cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     trial_expired_email_sent: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     custom_hotkey: Mapped[str] = mapped_column(String(20), default="f8", server_default="'f8'")
+    preferred_language: Mapped[str] = mapped_column(String(10), default="en", server_default="'en'")
+    is_translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
     sessions: Mapped[list["Session"]] = relationship("Session", back_populates="user")
     word_records: Mapped[list["WordRecord"]] = relationship("WordRecord", back_populates="user")

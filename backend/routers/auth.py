@@ -10,7 +10,7 @@ from database import get_db
 from models import User, SubscriptionStatus
 from schemas import (
     UserRegister, UserLogin, TokenResponse, RefreshRequest, ValidateResponse,
-    GoogleAuthCode, UserOut, HotkeyUpdate
+    GoogleAuthCode, UserOut, HotkeyUpdate, LanguageUpdate, TranslationUpdate
 )
 from security import (
     get_password_hash, verify_password, create_access_token, create_refresh_token,
@@ -192,7 +192,9 @@ async def validate_status(current_user: User = Depends(get_current_user)):
         tier=current_user.tier,
         trial_days_remaining=trial_remaining,
         user_id=str(current_user.id),
-        custom_hotkey=current_user.custom_hotkey
+        custom_hotkey=current_user.custom_hotkey,
+        preferred_language=current_user.preferred_language,
+        is_translation_enabled=current_user.is_translation_enabled
     )
 
 @router.get("/me", response_model=UserOut)
@@ -261,3 +263,47 @@ async def update_hotkey(
     current_user.custom_hotkey = hotkey
     await db.commit()
     return {"status": "ok", "hotkey": hotkey}
+
+@router.patch("/language")
+async def update_language(
+    data: LanguageUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update preferred transcription language. Only available for Pro users."""
+    if current_user.tier != "paid":
+        raise HTTPException(status_code=403, detail="Custom languages are a Pro feature.")
+        
+    lang = data.language.strip().lower()
+    
+    # Common ISO-639-1 language codes supported by OpenAI Whisper
+    allowed_languages = {
+        "af", "ar", "as", "az", "be", "bg", "bn", "br", "bs", "ca", "cs", "cy", "da", "de",
+        "el", "en", "es", "et", "eu", "fa", "fi", "fo", "fr", "gl", "gu", "ha", "he", "hi",
+        "hr", "hu", "hy", "id", "is", "it", "ja", "jw", "ka", "kk", "kn", "ko", "la", "lb",
+        "ln", "lo", "lt", "lv", "mg", "mi", "mk", "ml", "mn", "mr", "ms", "mt", "my", "ne",
+        "nl", "nn", "no", "oc", "pa", "pl", "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk",
+        "sl", "sn", "so", "sq", "sr", "st", "su", "sv", "sw", "ta", "te", "tg", "th", "tk",
+        "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yo", "zh"
+    }
+    
+    if lang not in allowed_languages:
+        raise HTTPException(status_code=400, detail=f"Invalid language code: {lang}")
+    
+    current_user.preferred_language = lang
+    await db.commit()
+    return {"status": "ok", "language": lang}
+
+@router.patch("/translation")
+async def update_translation(
+    data: TranslationUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Toggle translation feature. Only available for Pro users."""
+    if current_user.tier != "paid":
+        raise HTTPException(status_code=403, detail="Translation is a Pro feature.")
+    
+    current_user.is_translation_enabled = data.enabled
+    await db.commit()
+    return {"status": "ok", "enabled": data.enabled}

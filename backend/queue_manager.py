@@ -24,7 +24,7 @@ class QueueManager:
              Priority.TRIAL: {"slots": 50}
         }
 
-    async def enqueue_request(self, audio_content: bytes, priority: Priority) -> dict:
+    async def enqueue_request(self, audio_content: bytes, priority: Priority, language: str = "en", translate: bool = False) -> dict:
         """
         Pushes a request into the appropriate queue and waits for the result via pub/sub.
         In a real microservices, the worker would be a separate process.
@@ -55,6 +55,8 @@ class QueueManager:
             "job_id": job_id,
             "priority": priority.value,
             "filepath": filepath,
+            "language": language,
+            "translate": translate,
             "enqueued_at": asyncio.get_event_loop().time()
         }
         

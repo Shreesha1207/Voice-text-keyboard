@@ -46,6 +46,8 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
 
 auth_success = False
 tray_icon = None
+PREFERRED_LANGUAGE = "en"
+IS_TRANSLATION_ENABLED = False
 
 # ─────────────────────────────────────────────
 #   Single-instance lock
@@ -173,6 +175,25 @@ def _open_dashboard(icon, item):
 def _open_download(icon, item):
     webbrowser.open(f"{FRONTEND_URL}/download")
 
+def _toggle_translation(icon, item):
+    global IS_TRANSLATION_ENABLED
+    new_state = not IS_TRANSLATION_ENABLED
+    token = load_token()
+    if token:
+        try:
+            r = requests.patch(
+                f"{RAILWAY_URL}/auth/translation",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"enabled": new_state},
+                timeout=5
+            )
+            if r.status_code == 200:
+                IS_TRANSLATION_ENABLED = new_state
+                safe_notify(f"Translation {'Enabled' if new_state else 'Disabled'}", "Xvoice")
+        except Exception as e:
+            logger.error(f"Failed to toggle translation: {e}")
+            safe_notify("Update Failed", "Could not reach server.")
+
 def _logout(icon, item):
     # Invalidate all tokens server-side (logs out browser dashboard too)
     token = load_token()
@@ -223,6 +244,8 @@ def start_tray():
     menu = pystray.Menu(
         pystray.MenuItem("Open Dashboard", _open_dashboard, default=True),
         pystray.MenuItem("Download Page",  _open_download),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Enable Translation", _toggle_translation, checked=lambda item: IS_TRANSLATION_ENABLED),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Log Out",        _logout),
         pystray.MenuItem("Quit Xvoice",    _quit_app),
@@ -397,6 +420,9 @@ def require_auth():
             if r.status_code == 200 and r.json().get('allowed'):
                 received_key = r.json().get('custom_hotkey', 'f8')
                 set_dynamic_hotkey(received_key)
+                global PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED
+                PREFERRED_LANGUAGE = r.json().get('preferred_language', 'en')
+                IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', False)
                 _sync_timezone()
                 return True
         except Exception:
@@ -415,6 +441,9 @@ def require_auth():
                 if r.status_code == 200 and r.json().get('allowed'):
                     received_key = r.json().get('custom_hotkey', 'f8')
                     set_dynamic_hotkey(received_key)
+                    global PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED
+                    PREFERRED_LANGUAGE = r.json().get('preferred_language', 'en')
+                    IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', False)
                     safe_notify("Session renewed", f"Xvoice is ready. Press {HOTKEY.upper()} to dictate.")
                     _sync_timezone()
                     return True
@@ -453,6 +482,9 @@ def require_auth():
             )
             if r.status_code == 200:
                 set_dynamic_hotkey(r.json().get('custom_hotkey', 'f8'))
+                global PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED
+                PREFERRED_LANGUAGE = r.json().get('preferred_language', 'en')
+                IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', False)
         except Exception:
             pass
 
@@ -701,6 +733,7 @@ def transcribe_audio(audio_path):
                 f"{RAILWAY_URL}/transcribe",
                 headers={"Authorization": f"Bearer {token}"},
                 files={'file': f},
+                data={'language': PREFERRED_LANGUAGE},
                 timeout=30
             )
 
@@ -725,7 +758,7 @@ def transcribe_audio(audio_path):
                     os.remove(CONFIG_FILE)
                 need_reauth = True
                 safe_notify("Session expired", "Xvoice will reconnect — check your browser.")
-        elif response.status_code == 429:
+        elif r.status_code == 429:
             safe_notify("Server busy", "Try again in a moment.")
     except Exception as e:
         safe_notify("Connection error", str(e)[:80])
