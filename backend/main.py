@@ -4,7 +4,7 @@ from database import init_db
 from models import Achievement
 from database import async_sessionmaker, engine, AsyncSessionLocal
 import asyncio
-from worker import worker_loop
+from worker import start_worker
 
 from routers import auth, stats, achievements, billing, transcribe
 
@@ -36,8 +36,8 @@ async def on_startup():
     logger.info("Initializing database...")
     await init_db()
     
-    # Start the worker task that drains Priority Queues
-    asyncio.create_task(worker_loop())
+    # Start both the transcription worker AND the trial expiry checker
+    start_worker()
     
     # Seed Achievements if empty
     async with AsyncSessionLocal() as db:

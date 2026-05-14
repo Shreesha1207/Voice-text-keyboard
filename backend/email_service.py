@@ -10,13 +10,17 @@ SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
-FROM_EMAIL = os.getenv("FROM_EMAIL", SMTP_USER or "noreply@xvoicekeyboard.com")
+FROM_EMAIL = os.getenv("FROM_EMAIL", SMTP_USER or "xvoicekeyboard@gmail.com")
 
 def send_email(to_email: str, subject: str, html_body: str):
     """Core function to send an email using SMTP."""
     if not SMTP_USER or not SMTP_PASSWORD:
-        logger.warning(f"SMTP not configured. Skipping email to {to_email}: {subject}")
-        return False
+        logger.info("--- 📧 DEBUG EMAIL SENT (SMTP NOT CONFIGURED) ---")
+        logger.info(f"To: {to_email}")
+        logger.info(f"Subject: {subject}")
+        logger.info(f"Body: {html_body[:200]}...") # truncate for logs
+        logger.info("------------------------------------------------")
+        return True
 
     try:
         msg = MIMEMultipart()
@@ -39,17 +43,17 @@ def send_email(to_email: str, subject: str, html_body: str):
 
 def send_welcome_email(to_email: str, display_name: str = None):
     name = display_name or "there"
-    subject = "Welcome to XVoice! 🎉"
+    subject = "Welcome to Xvoice! 🎉"
     html = f"""
     <html>
       <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-        <h2>Welcome to XVoice, {name}!</h2>
+        <h2>Welcome to Xvoice, {name}!</h2>
         <p>We are thrilled to have you on board. You've just unlocked the fastest way to type—using your voice.</p>
         <p>Your <strong>14-day free trial</strong> starts right now. Make sure to download the desktop application and try it out!</p>
         <p>If you need any help, just reply to this email.</p>
         <br/>
         <p>Happy dictating,</p>
-        <p><strong>The XVoice Team</strong></p>
+        <p><strong>The Xvoice Team</strong></p>
       </body>
     </html>
     """
@@ -57,17 +61,17 @@ def send_welcome_email(to_email: str, display_name: str = None):
 
 def send_trial_expired_email(to_email: str, display_name: str = None):
     name = display_name or "there"
-    subject = "Your XVoice trial has ended ⏳"
+    subject = "Your Xvoice trial has ended ⏳"
     html = f"""
     <html>
       <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
         <h2>Hi {name},</h2>
-        <p>We hope you've enjoyed your 14-day free trial of XVoice.</p>
-        <p>Your trial has officially ended, but you don't have to stop talking! Upgrade to XVoice Pro today to keep your voice-to-text access uninterrupted.</p>
+        <p>We hope you've enjoyed your 14-day free trial of Xvoice.</p>
+        <p>Your trial has officially ended, but you don't have to stop talking! Upgrade to Xvoice Pro today to keep your voice-to-text access uninterrupted.</p>
         <p><a href="https://xvoicekeyboard.com/dashboard" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">Upgrade to Pro</a></p>
         <br/>
-        <p>Thanks for trying XVoice!</p>
-        <p><strong>The XVoice Team</strong></p>
+        <p>Thanks for trying Xvoice!</p>
+        <p><strong>The Xvoice Team</strong></p>
       </body>
     </html>
     """
