@@ -1,40 +1,123 @@
-# Environment & secrets
+# ==============================================================================
+# Voice-text-keyboard Root Git Ignore
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Environment & Secrets
+# ------------------------------------------------------------------------------
 .env
+.env*.local
+*.env
 backend/.env
-backend\.env.example
-.gitignore
 
-# Python cache
+# ------------------------------------------------------------------------------
+# System & IDEs
+# ------------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# VS Code (except settings.json if needed, but standard is to ignore user state)
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.history/
+
+# JetBrains / PyCharm
+.idea/
+
+# ------------------------------------------------------------------------------
+# Python & Virtual Environments
+# ------------------------------------------------------------------------------
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
 *.pyd
-backend/__pycache__/
+*.pyo
 
-# Virtual environments
+# Virtual Environments
 venv/
-backend/venv/
 .venv/
+env/
+ENV/
+backend/venv/
+backend/.venv/
 
-# Temp audio files
+# Python packaging & distribution
+*.egg-info/
+.eggs/
+dist/
+build/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+
+# Python testing/coverage
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+
+# ------------------------------------------------------------------------------
+# Node & Frontend (Managed separately / Lovable)
+# ------------------------------------------------------------------------------
+frontend/
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ------------------------------------------------------------------------------
+# PyInstaller Build Artifacts
+# ------------------------------------------------------------------------------
+# We exclude all spec files EXCEPT xvoice.spec which is intentionally tracked.
+*.spec
+!xvoice.spec
+
+# ------------------------------------------------------------------------------
+# Executables, Installers, & Large Binaries
+# ------------------------------------------------------------------------------
+Output/
+*.exe
+*.msi
+*.zip
+*.rar
+*.tar.gz
+ffmpeg
+ffprobe
+
+# ------------------------------------------------------------------------------
+# Project-specific / Temporary files
+# ------------------------------------------------------------------------------
+# Audio/Temporary raw files
 backend/temp_audio/
 temp_raw.wav
 temp_norm.wav
+*.wav
+*.mp3
+*.m4a
+*.flac
 
 # Test artifacts
 backend/test_results.txt
 backend/test_endpoints.py
-C:\Users\SHREESHA012\OneDrive\Desktop\Projects\Voice-text-keyboard\backend\.gitignore
+*test_results.txt
 
-# Frontend (managed separately via Lovable)
-frontend/
-
-# --- PyInstaller build artifacts (do NOT commit these) ---
-build/
-dist/
-*.spec
-# Note: xvoice.spec is intentionally committed for reproducible builds
-!xvoice.spec
-
-# Desktop app user config (token storage)
+# User config & state files
 AppData/
