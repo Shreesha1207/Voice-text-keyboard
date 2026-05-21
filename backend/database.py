@@ -1,13 +1,27 @@
 import os
+import logging
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/xvoice")
+logger = logging.getLogger(__name__)
 
-# Railway gives postgresql:// but asyncpg needs postgresql+asyncpg://
+# Connection string is sourced exclusively from DATABASE_URL.
+# Set this variable directly in the Railway Variables tab as a plain connection
+# string (e.g. postgresql://user:pass@host:5432/db).  Do NOT use reference
+# variables like ${{ Postgres.PGHOST }} — they are not resolved at runtime and
+# will be passed as literal strings, causing authentication failures.
+_LOCAL_DEFAULT = "postgresql+asyncpg://postgres:postgres@localhost:5432/xvoice"
+DATABASE_URL = os.getenv("DATABASE_URL", _LOCAL_DEFAULT)
+
+if DATABASE_URL == _LOCAL_DEFAULT:
+    logger.warning("DATABASE_URL is not set — falling back to local default.")
+else:
+    logger.info("DATABASE_URL loaded from environment.")
+
+# Normalise the scheme: asyncpg requires postgresql+asyncpg://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
 elif DATABASE_URL.startswith("postgresql://"):
