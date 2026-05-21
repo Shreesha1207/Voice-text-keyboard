@@ -30,29 +30,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.on_event("startup")
 async def on_startup():
-    logger.info("Initializing database...")
-    await init_db()
-    
     # Start both the transcription worker AND the trial expiry checker
     start_worker()
-    
-    # Seed Achievements if empty
-    async with AsyncSessionLocal() as db:
-        from sqlalchemy import select
-        res = await db.execute(select(Achievement))
-        if len(res.scalars().all()) == 0:
-             logger.info("Seeding initial achievements")
-             seed_data = [
-                 Achievement(slug="first_word", name="First Word", description="First successful transcription", icon="🎙️", trigger_type="total_words", trigger_value="1"),
-                 Achievement(slug="wordsmith", name="Wordsmith", description="10,000 total words", icon="📖", trigger_type="total_words", trigger_value="10000"),
-                 Achievement(slug="on_a_roll", name="On A Roll", description="7-day usage streak", icon="🔥", trigger_type="streak", trigger_value="7"),
-                 Achievement(slug="dedicated", name="Dedicated", description="30-day usage streak", icon="💎", trigger_type="streak", trigger_value="30"),
-             ]
-             db.add_all(seed_data)
-             await db.commit()
+
+    try:
+        logger.info("Initializing database...")
+        await init_db()
+
+        # Seed Achievements if empty
+        async with AsyncSessionLocal() as db:
+            from sqlalchemy import select
+            res = await db.execute(select(Achievement))
+            if len(res.scalars().all()) == 0:
+                 logger.info("Seeding initial achievements")
+                 seed_data = [
+                     Achievement(slug="first_word", name="First Word", description="First successful transcription", icon="🎙️", trigger_type="total_words", trigger_value="1"),
+                     Achievement(slug="wordsmith", name="Wordsmith", description="10,000 total words", icon="📖", trigger_type="total_words", trigger_value="10000"),
+                     Achievement(slug="on_a_roll", name="On A Roll", description="7-day usage streak", icon="🔥", trigger_type="streak", trigger_value="7"),
+                     Achievement(slug="dedicated", name="Dedicated", description="30-day usage streak", icon="💎", trigger_type="streak", trigger_value="30"),
+                 ]
+                 db.add_all(seed_data)
+                 await db.commit()
+    except Exception as e:
+        logger.warning(
+            "Database initialization failed — app will continue without a database connection. "
+            f"Error: {e}"
+        )
+
 
 # --- Routers ---
 app.include_router(auth.router)
