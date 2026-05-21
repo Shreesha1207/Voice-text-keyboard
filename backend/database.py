@@ -5,7 +5,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/xvoice")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Railway often automatically injects individual PG variables instead of DATABASE_URL.
+# If they are present and represent a remote Railway database, prioritize constructing DATABASE_URL dynamically.
+pg_host = os.getenv("PGHOST") or os.getenv("POSTGRES_HOST")
+if pg_host and pg_host not in ("localhost", "127.0.0.1", "db"):
+    pg_user = os.getenv("PGUSER") or os.getenv("POSTGRES_USER")
+    pg_password = os.getenv("PGPASSWORD") or os.getenv("POSTGRES_PASSWORD")
+    pg_port = os.getenv("PGPORT") or os.getenv("POSTGRES_PORT", "5432")
+    pg_db = os.getenv("PGDATABASE") or os.getenv("POSTGRES_DB") or os.getenv("POSTGRES_DATABASE")
+    if pg_user and pg_password and pg_db:
+        DATABASE_URL = f"postgresql+asyncpg://{pg_user}:{pg_password}@{pg_host}:{pg_port}/{pg_db}"
+
+# Fallback to local default if still not set
+if not DATABASE_URL:
+    DATABASE_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/xvoice"
 
 # Railway gives postgresql:// but asyncpg needs postgresql+asyncpg://
 if DATABASE_URL.startswith("postgres://"):
