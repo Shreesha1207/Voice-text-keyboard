@@ -1,22 +1,96 @@
 import os
+import re
+import logging
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from dotenv import load_dotenv
 
 load_dotenv()
 
+logging.basicConfig(level=logging.INFO)
+_db_logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Helper: detect unresolved Railway reference-variable syntax "${{ Svc.VAR }}"
+# ---------------------------------------------------------------------------
+_UNRESOLVED_RE = re.compile(r"^\$\{\{.*\}\}$")
+
+
+def _is_unresolved(value: str | None) -> bool:
+    """Return True when a value is still a raw Railway template placeholder."""
+    return bool(value and _UNRESOLVED_RE.match(value.strip()))
+
+
+# ---------------------------------------------------------------------------
+# Debug: log every PG env-var so we can see whether they resolved or not.
+# Passwords are partially masked for safety.
+# ---------------------------------------------------------------------------
+def _mask(value: str | None) -> str:
+    if not value:
+        return "<not set>"
+    if _is_unresolved(value):
+        return f"<UNRESOLVED TEMPLATE: {value}>"
+    if "password" in value.lower() or len(value) > 4:
+        return value[:2] + "***" + value[-1]
+    return value
+
+
+_raw_pg_vars = {
+    "PGHOST":      os.getenv("PGHOST"),
+    "PGUSER":      os.getenv("PGUSER"),
+    "PGPASSWORD":  os.getenv("PGPASSWORD"),
+    "PGPORT":      os.getenv("PGPORT"),
+    "PGDATABASE":  os.getenv("PGDATABASE"),
+    "DATABASE_URL": os.getenv("DATABASE_URL"),
+}
+
+_db_logger.info("=== DATABASE ENV VAR DIAGNOSTICS ===")
+for _var, _val in _raw_pg_vars.items():
+    _display = _val if _var not in ("PGPASSWORD",) else _mask(_val)
+    _db_logger.info("  %s = %s", _var, _display if _display is not None else "<not set>")
+
+# Warn loudly if any variable looks like an unresolved Railway template.
+_unresolved = [k for k, v in _raw_pg_vars.items() if _is_unresolved(v)]
+if _unresolved:
+    _db_logger.warning(
+        "The following env vars contain unresolved Railway reference-variable "
+        "syntax and will NOT work as database credentials: %s. "
+        "Make sure the variable references are set correctly in the Railway "
+        "service's Variables tab (e.g. PGHOST = ${{ Postgres.PGHOST }}) and "
+        "that the Postgres service is deployed and linked to this service.",
+        ", ".join(_unresolved),
+    )
+_db_logger.info("=====================================")
+
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Railway often automatically injects individual PG variables instead of DATABASE_URL.
-# If they are present and represent a remote Railway database, prioritize constructing DATABASE_URL dynamically.
+# ---------------------------------------------------------------------------
+# Railway often automatically injects individual PG variables instead of
+# DATABASE_URL.  If they are present, resolve and prefer them — but only when
+# they are *actual* values, not unresolved template placeholders.
+# ---------------------------------------------------------------------------
 pg_host = os.getenv("PGHOST") or os.getenv("POSTGRES_HOST")
-if pg_host and pg_host not in ("localhost", "127.0.0.1", "db"):
-    pg_user = os.getenv("PGUSER") or os.getenv("POSTGRES_USER")
+if pg_host and not _is_unresolved(pg_host) and pg_host not in ("localhost", "127.0.0.1", "db"):
+    pg_user     = os.getenv("PGUSER")     or os.getenv("POSTGRES_USER")
     pg_password = os.getenv("PGPASSWORD") or os.getenv("POSTGRES_PASSWORD")
-    pg_port = os.getenv("PGPORT") or os.getenv("POSTGRES_PORT", "5432")
-    pg_db = os.getenv("PGDATABASE") or os.getenv("POSTGRES_DB") or os.getenv("POSTGRES_DATABASE")
-    if pg_user and pg_password and pg_db:
-        DATABASE_URL = f"postgresql+asyncpg://{pg_user}:{pg_password}@{pg_host}:{pg_port}/{pg_db}"
+    pg_port     = os.getenv("PGPORT")     or os.getenv("POSTGRES_PORT", "5432")
+    pg_db       = os.getenv("PGDATABASE") or os.getenv("POSTGRES_DB") or os.getenv("POSTGRES_DATABASE")
+
+    # Only use these values if none of them are unresolved templates.
+    if all(not _is_unresolved(v) for v in (pg_user, pg_password, pg_port, pg_db)):
+        if pg_user and pg_password and pg_db:
+            DATABASE_URL = (
+                f"postgresql+asyncpg://{pg_user}:{pg_password}"
+                f"@{pg_host}:{pg_port}/{pg_db}"
+            )
+            _db_logger.info("DATABASE_URL constructed from individual PG env vars.")
+    else:
+        _db_logger.warning(
+            "One or more PG env vars are unresolved Railway templates — "
+            "skipping dynamic DATABASE_URL construction. "
+            "Check that PGUSER, PGPASSWORD, PGPORT, and PGDATABASE are all "
+            "properly linked to the Postgres service."
+        )
 
 # Fallback to local default if still not set
 if not DATABASE_URL:
