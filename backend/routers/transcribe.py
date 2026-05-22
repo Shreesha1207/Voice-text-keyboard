@@ -45,7 +45,7 @@ async def transcribe_audio(
         audio_bytes, 
         priority, 
         language=language,
-        translate=current_user.is_translation_enabled
+        translate=current_user.is_translation_enabled if current_user.tier == "paid" else False
     )
     
     if "error" in enqueue_result:
