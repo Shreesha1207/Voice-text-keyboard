@@ -76,3 +76,30 @@ def send_trial_expired_email(to_email: str, display_name: str = None):
     </html>
     """
     return send_email(to_email, subject, html)
+
+def send_password_reset_email(to_email: str, reset_link: str, display_name: str = None):
+    name = display_name or "there"
+    subject = "Reset your Xvoice password 🔐"
+    html = f"""
+    <html>
+      <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; background-color: #f9f9f9; padding: 20px;">
+        <div style="max-width: 520px; margin: 0 auto; background: #fff; border-radius: 12px; padding: 32px; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+          <h2 style="margin-top: 0;">Hi {name}, forgot your password?</h2>
+          <p>No worries — it happens! Click the button below to set a new password. This link is valid for <strong>15 minutes</strong>.</p>
+          <p style="text-align: center; margin: 32px 0;">
+            <a href="{reset_link}"
+               style="background-color: #7c3aed; color: #fff; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; display: inline-block;">
+              Reset Password
+            </a>
+          </p>
+          <p style="font-size: 13px; color: #888;">If the button doesn't work, copy and paste this link into your browser:<br/>
+            <a href="{reset_link}" style="color: #7c3aed; word-break: break-all;">{reset_link}</a>
+          </p>
+          <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;"/>
+          <p style="font-size: 12px; color: #aaa;">If you didn't request a password reset, you can safely ignore this email. Your password won't change.</p>
+          <p style="margin-bottom: 0;"><strong>The Xvoice Team</strong></p>
+        </div>
+      </body>
+    </html>
+    """
+    return send_email(to_email, subject, html)

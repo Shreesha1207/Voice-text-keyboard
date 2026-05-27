@@ -10,7 +10,8 @@ from database import get_db
 from models import User, SubscriptionStatus
 from schemas import (
     UserRegister, UserLogin, TokenResponse, RefreshRequest, ValidateResponse,
-    GoogleAuthCode, UserOut, HotkeyUpdate, LanguageUpdate, TranslationUpdate
+    GoogleAuthCode, UserOut, HotkeyUpdate, LanguageUpdate, TranslationUpdate,
+    ForgotPasswordRequest, ResetPasswordRequest
 )
 from security import (
     get_password_hash, verify_password, create_access_token, create_refresh_token,
@@ -20,7 +21,9 @@ from dependencies import get_current_user
 from jose import jwt, JWTError
 from datetime import datetime, timezone
 
-from email_service import send_welcome_email
+from email_service import send_welcome_email, send_password_reset_email
+import secrets
+from datetime import timedelta
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
@@ -209,6 +212,58 @@ async def logout(current_user: User = Depends(get_current_user), db: AsyncSessio
     current_user.token_version += 1
     await db.commit()
     return {"status": "ok", "detail": "Logged out from all devices"}
+
+
+@router.post("/forgot-password")
+async def forgot_password(
+    data: ForgotPasswordRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+):
+    """Request a password reset link. Always returns 200 to prevent email enumeration."""
+    stmt = select(User).where(User.email == data.email)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+
+    if user and user.password_hash:  # Only for email/password accounts
+        token = secrets.token_urlsafe(32)
+        user.password_reset_token = token
+        user.password_reset_expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+        await db.commit()
+
+        frontend_url = os.getenv("FRONTEND_URL", "https://xvoicekeyboard.com")
+        reset_link = f"{frontend_url}/reset-password?token={token}"
+        background_tasks.add_task(
+            send_password_reset_email, user.email, reset_link, user.display_name
+        )
+
+    return {"status": "ok", "detail": "If that email exists, a reset link has been sent."}
+
+
+@router.post("/reset-password")
+async def reset_password(
+    data: ResetPasswordRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Reset password using a valid token from the reset email."""
+    stmt = select(User).where(User.password_reset_token == data.token)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
+
+    if not user or not user.password_reset_expires:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link.")
+
+    if datetime.now(timezone.utc) > user.password_reset_expires.replace(tzinfo=timezone.utc):
+        raise HTTPException(status_code=400, detail="Reset link has expired. Please request a new one.")
+
+    # Update password, clear token, invalidate all existing sessions
+    user.password_hash = get_password_hash(data.new_password)
+    user.password_reset_token = None
+    user.password_reset_expires = None
+    user.token_version += 1  # Invalidates all active sessions
+    await db.commit()
+
+    return {"status": "ok", "detail": "Password updated successfully. Please sign in with your new password."}
 
 @router.patch("/timezone")
 async def update_timezone(

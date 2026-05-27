@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, date
-from sqlalchemy import String, DateTime, Boolean, Integer, Float, ForeignKey, Date, Enum as SAEnum
+from sqlalchemy import String, DateTime, Boolean, Integer, Float, ForeignKey, Date, Text, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 from database import Base
@@ -45,6 +45,10 @@ class User(Base):
     custom_hotkey: Mapped[str] = mapped_column(String(20), default="f8", server_default="'f8'")
     preferred_language: Mapped[str] = mapped_column(String(10), default="en", server_default="'en'")
     is_translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+    # Password reset fields
+    password_reset_token: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    password_reset_expires: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
 
     sessions: Mapped[list["Session"]] = relationship("Session", back_populates="user")
     word_records: Mapped[list["WordRecord"]] = relationship("WordRecord", back_populates="user")

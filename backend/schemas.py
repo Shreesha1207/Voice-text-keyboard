@@ -55,6 +55,16 @@ class LanguageUpdate(BaseModel):
 class TranslationUpdate(BaseModel):
     enabled: bool
 
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8)
+
+
 # ─── User ─────────────────────────────────────────────────────────────────────
 
 class UserOut(BaseModel):
