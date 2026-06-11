@@ -152,6 +152,8 @@ async def trial_cron_loop():
     logger.info("Started background trial expiry checker.")
     while True:
         try:
+            # Step 1: Fetch users
+            users_to_process = []
             async with AsyncSessionLocal() as db:
                 # 14 days ago
                 cutoff = datetime.utcnow() - timedelta(days=14)
@@ -163,15 +165,22 @@ async def trial_cron_loop():
                 )
                 result = await db.execute(stmt)
                 expired_users = result.scalars().all()
-                
-                for user in expired_users:
-                    success = await asyncio.to_thread(send_trial_expired_email, user.email, user.display_name)
-                    if success:
-                        user.trial_expired_email_sent = True
-                        
-                if expired_users:
-                    await db.commit()
+                for u in expired_users:
+                    users_to_process.append({"id": u.id, "email": u.email, "display_name": u.display_name})
                     
+            # Step 2: Process emails and update DB independently
+            for u in users_to_process:
+                success = await asyncio.to_thread(send_trial_expired_email, u["email"], u["display_name"])
+                if success:
+                    async with AsyncSessionLocal() as update_db:
+                        from sqlalchemy import update
+                        await update_db.execute(
+                            update(User)
+                            .where(User.id == u["id"])
+                            .values(trial_expired_email_sent=True)
+                        )
+                        await update_db.commit()
+                        
         except Exception as e:
             logger.exception("Trial cron error")
             

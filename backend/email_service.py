@@ -26,9 +26,9 @@ def _call_edge_function(payload: dict) -> bool:
                 "Content-Type": "application/json",
                 "X-Email-Secret": EMAIL_WEBHOOK_SECRET,
             },
-            timeout=10.0,
+            timeout=30.0,
         )
-        if response.status_code == 200:
+        if response.is_success:
             logger.info(f"Email sent via edge function: type={payload.get('type')} to={payload.get('to')}")
             return True
         else:
