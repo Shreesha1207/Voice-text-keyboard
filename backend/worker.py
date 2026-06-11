@@ -173,13 +173,10 @@ async def trial_cron_loop():
                 success = await asyncio.to_thread(send_trial_expired_email, u["email"], u["display_name"])
                 if success:
                     async with AsyncSessionLocal() as update_db:
-                        from sqlalchemy import update
-                        await update_db.execute(
-                            update(User)
-                            .where(User.id == u["id"])
-                            .values(trial_expired_email_sent=True)
-                        )
-                        await update_db.commit()
+                        user_obj = await update_db.get(User, u["id"])
+                        if user_obj:
+                            user_obj.trial_expired_email_sent = True
+                            await update_db.commit()
                         
         except Exception as e:
             logger.exception("Trial cron error")
