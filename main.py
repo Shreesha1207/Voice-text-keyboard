@@ -210,6 +210,17 @@ def _logout(icon, item):
         os.remove(CONFIG_FILE)
     safe_notify("Logged out from all devices", "Xvoice")
 
+def _restart_app(icon, item):
+    """Close the current instance and relaunch the app."""
+    icon.stop()
+    if getattr(sys, 'frozen', False):
+        # Running as compiled .exe
+        subprocess.Popen([sys.executable])
+    else:
+        # Running as plain Python script
+        subprocess.Popen([sys.executable, os.path.abspath(__file__)])
+    os._exit(0)
+
 def _quit_app(icon, item):
     icon.stop()
     os._exit(0)
@@ -247,6 +258,7 @@ def start_tray():
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Enable Translation", _toggle_translation, checked=lambda item: IS_TRANSLATION_ENABLED),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Refresh / Restart", _restart_app),
         pystray.MenuItem("Log Out",        _logout),
         pystray.MenuItem("Quit Xvoice",    _quit_app),
     )
@@ -403,7 +415,7 @@ def wait_for_internet(poll_interval: float = 5.0) -> None:
     logger.info("Internet connection restored.")
 
 def require_auth():
-    global auth_success
+    global auth_success, PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED
 
     # ── Wait for a live network before touching any endpoint ──
     wait_for_internet()
@@ -420,7 +432,6 @@ def require_auth():
             if r.status_code == 200 and r.json().get('allowed'):
                 received_key = r.json().get('custom_hotkey', 'f8')
                 set_dynamic_hotkey(received_key)
-                global PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED
                 PREFERRED_LANGUAGE = r.json().get('preferred_language', 'en')
                 IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', False)
                 _sync_timezone()
@@ -441,7 +452,6 @@ def require_auth():
                 if r.status_code == 200 and r.json().get('allowed'):
                     received_key = r.json().get('custom_hotkey', 'f8')
                     set_dynamic_hotkey(received_key)
-                    global PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED
                     PREFERRED_LANGUAGE = r.json().get('preferred_language', 'en')
                     IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', False)
                     safe_notify("Session renewed", f"Xvoice is ready. Press {HOTKEY.upper()} to dictate.")
@@ -482,7 +492,6 @@ def require_auth():
             )
             if r.status_code == 200:
                 set_dynamic_hotkey(r.json().get('custom_hotkey', 'f8'))
-                global PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED
                 PREFERRED_LANGUAGE = r.json().get('preferred_language', 'en')
                 IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', False)
         except Exception:
