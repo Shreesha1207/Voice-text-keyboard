@@ -152,10 +152,9 @@ async def trial_cron_loop():
     logger.info("Started background trial expiry checker.")
     while True:
         try:
-            # Step 1: Fetch users
+            # Step 1: Fetch expired trial users who haven't been notified yet
             users_to_process = []
             async with AsyncSessionLocal() as db:
-                # 14 days ago
                 cutoff = datetime.utcnow() - timedelta(days=14)
                 
                 stmt = select(User).where(
@@ -168,15 +167,30 @@ async def trial_cron_loop():
                 for u in expired_users:
                     users_to_process.append({"id": u.id, "email": u.email, "display_name": u.display_name})
                     
-            # Step 2: Process emails and update DB independently
+            # Step 2: For each user, mark the flag FIRST then send the email.
+            # This "flag-first" approach guarantees we never send duplicates.
+            # If the email fails after flagging, we log it — one missed email
+            # is far better than spamming someone every hour forever.
             for u in users_to_process:
-                success = await asyncio.to_thread(send_trial_expired_email, u["email"], u["display_name"])
-                if success:
+                try:
+                    # Mark as sent BEFORE sending to prevent duplicates
                     async with AsyncSessionLocal() as update_db:
                         user_obj = await update_db.get(User, u["id"])
                         if user_obj:
                             user_obj.trial_expired_email_sent = True
                             await update_db.commit()
+                            logger.info(f"Marked trial_expired_email_sent=True for user {u['id']}")
+                        else:
+                            logger.warning(f"User {u['id']} not found, skipping.")
+                            continue
+
+                    # Now send the email
+                    success = await asyncio.to_thread(send_trial_expired_email, u["email"], u["display_name"])
+                    if not success:
+                        logger.error(f"Failed to send trial expired email to {u['email']} (user {u['id']}). "
+                                     "Flag already set — will NOT retry automatically.")
+                except Exception as e:
+                    logger.exception(f"Error processing trial expiry for user {u['id']}")
                         
         except Exception as e:
             logger.exception("Trial cron error")
