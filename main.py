@@ -16,6 +16,7 @@ import requests
 import pystray
 from PIL import Image, ImageDraw
 from contextlib import contextmanager
+from writing.engine import WritingEngine
 
 if sys.platform == "win32":
     import winsound
@@ -862,4 +863,9 @@ if __name__ == "__main__":
     setup_startup()
     t = threading.Thread(target=voice_loop, daemon=True)
     t.start()
+    
+    # Initialize and start Writing Engine
+    writing_engine = WritingEngine(load_token)
+    writing_engine.start()
+    
     start_tray()   # blocks here — keeps app alive via tray

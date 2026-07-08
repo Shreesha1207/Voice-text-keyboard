@@ -6,7 +6,7 @@ from database import async_sessionmaker, engine, AsyncSessionLocal
 import asyncio
 from worker import start_worker
 
-from routers import auth, stats, achievements, billing, transcribe
+from routers import auth, stats, achievements, billing, transcribe, transform
 
 import logging
 
@@ -60,6 +60,7 @@ app.include_router(stats.router)
 app.include_router(achievements.router)
 app.include_router(billing.router)
 app.include_router(transcribe.router)
+app.include_router(transform.router)
 
 
 @app.get("/")
