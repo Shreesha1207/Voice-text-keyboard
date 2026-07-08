@@ -1,4 +1,7 @@
 import tkinter as tk
+import os
+import sys
+import json
 from typing import Callable
 
 BG_COLOR = "#2B1B17"
@@ -16,8 +19,39 @@ LANGUAGES = [
     "More..."
 ]
 
-# Keep track of recent for this session
-_recent_language = "Spanish" 
+# Determine config file path to read/write recent language
+if sys.platform == "win32":
+    CONFIG_DIR = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "Xvoice")
+elif sys.platform == "darwin":
+    CONFIG_DIR = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Xvoice")
+else:
+    CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "Xvoice")
+CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
+
+def load_recent_lang():
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                return json.load(f).get('recent_lang')
+        except Exception:
+            pass
+    return None
+
+def save_recent_lang(lang):
+    data = {}
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                data = json.load(f)
+        except Exception:
+            pass
+    data['recent_lang'] = lang
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    try:
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(data, f)
+    except Exception:
+        pass
 
 def show_language_menu(root, x: int, y: int, on_select: Callable[[str], None]):
     menu_win = tk.Toplevel(root)
@@ -28,12 +62,10 @@ def show_language_menu(root, x: int, y: int, on_select: Callable[[str], None]):
     # Adjust position slightly down
     menu_win.geometry(f"+{x}+{y + 35}")
 
-    # Reorder languages so recent is first (unless it's English, or just put it at top)
+    # Reorder languages
     display_langs = list(LANGUAGES)
-    if _recent_language in display_langs and _recent_language != "More...":
-        display_langs.remove(_recent_language)
-        display_langs.insert(0, _recent_language)
-        
+    recent = load_recent_lang()
+    
     title = tk.Label(menu_win, text="Translate", bg=BG_COLOR, fg=TEXT_COLOR, font=("Segoe UI", 9, "bold"), pady=4)
     title.pack(fill="x")
     
@@ -41,13 +73,25 @@ def show_language_menu(root, x: int, y: int, on_select: Callable[[str], None]):
         return lambda e: select(lang)
         
     def select(lang):
-        global _recent_language
         if lang != "More...":
-            _recent_language = lang
+            save_recent_lang(lang)
         menu_win.destroy()
         if lang != "More...":
             on_select(lang)
 
+    # Render Recent
+    if recent and recent in display_langs and recent != "More...":
+        lbl = tk.Label(menu_win, text=f"Recent: {recent}", bg=BG_COLOR, fg=TEXT_COLOR, font=("Segoe UI", 9, "italic"), anchor="w", padx=10, pady=3, cursor="hand2")
+        lbl.pack(fill="x")
+        lbl.bind("<Enter>", lambda e, w=lbl: w.config(bg=HOVER_COLOR))
+        lbl.bind("<Leave>", lambda e, w=lbl: w.config(bg=BG_COLOR))
+        lbl.bind("<Button-1>", make_handler(recent))
+        
+        # Separator
+        sep = tk.Frame(menu_win, bg=TEXT_COLOR, height=1)
+        sep.pack(fill="x", padx=5, pady=2)
+
+    # Render All
     for lang in display_langs:
         lbl = tk.Label(
             menu_win, 
@@ -62,13 +106,8 @@ def show_language_menu(root, x: int, y: int, on_select: Callable[[str], None]):
         )
         lbl.pack(fill="x")
         
-        def on_enter(e, widget=lbl):
-            widget.config(bg=HOVER_COLOR)
-        def on_leave(e, widget=lbl):
-            widget.config(bg=BG_COLOR)
-            
-        lbl.bind("<Enter>", on_enter)
-        lbl.bind("<Leave>", on_leave)
+        lbl.bind("<Enter>", lambda e, w=lbl: w.config(bg=HOVER_COLOR))
+        lbl.bind("<Leave>", lambda e, w=lbl: w.config(bg=BG_COLOR))
         lbl.bind("<Button-1>", make_handler(lang))
 
     # Auto close if they click outside. 

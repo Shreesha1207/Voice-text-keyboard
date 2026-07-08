@@ -49,20 +49,35 @@ class WritingEngine:
             # We'll just pass the click coordinates.
             self.overlay_manager.on_left_click(x, y)
 
-    def trigger_translation(self, target_language: str):
+    def on_xvoice_click(self, x, y):
+        # 1. Grab selection and backup clipboard before showing UI
+        from writing import selection
+        selected_text, prev_clipboard = selection.get_selected_text_and_restore()
+        
+        if not selected_text or selected_text.strip() == "":
+            self.overlay_manager.hide_all()
+            return
+            
+        self.overlay_manager.cmd_queue.put(('show_lang', (x, y, selected_text, prev_clipboard)))
+
+    def trigger_translation(self, target_language: str, selected_text: str, prev_clipboard: str):
         # Called by the UI when a language is selected
         def on_success(text):
-            self.overlay_manager.cmd_queue.put(('show_toast', ("Translation successful!", True, 3000)))
+            self.overlay_manager.cmd_queue.put(('show_toast', (f"✓ Translated to {target_language}", True, 1000)))
             
         def on_error(msg):
-            self.overlay_manager.cmd_queue.put(('show_toast', (msg, False, 5000)))
+            # No error toast on copy failure, but we still have error callback for backend issues
+            # We will ignore errors for gracefully exiting, but log backend errors.
+            pass
             
         def on_loading():
-            self.overlay_manager.cmd_queue.put(('show_toast', ("Translating...", True, 2000)))
+            self.overlay_manager.cmd_queue.put(('show_toast', ("🌐 Translating...", True, 3000)))
 
         perform_translation(
             self.backend_client,
             target_language,
+            selected_text,
+            prev_clipboard,
             on_success,
             on_error,
             on_loading

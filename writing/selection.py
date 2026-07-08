@@ -35,6 +35,6 @@ def replace_text(new_text: str, prev_clipboard_content: str):
     clipboard.paste_selection()
     
     # 3. Give the OS a moment to process the paste, then restore the old clipboard
-    time.sleep(0.1)
+    time.sleep(0.15)
     if prev_clipboard_content is not None:
         clipboard.set_clipboard(prev_clipboard_content)

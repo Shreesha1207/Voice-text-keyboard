@@ -33,7 +33,9 @@ class OverlayManager:
                         self._do_hide_button()
                     elif cmd == 'show_lang':
                         self._do_hide_button()
-                        show_language_menu(self.root, args[0], args[1], self.engine.trigger_translation)
+                        # args: x, y, selected_text, prev_clipboard
+                        show_language_menu(self.root, args[0], args[1], 
+                            lambda lang: self.engine.trigger_translation(lang, args[2], args[3]))
                     elif cmd == 'show_toast':
                         self._do_show_toast(*args)
             except queue.Empty:
@@ -83,7 +85,7 @@ class OverlayManager:
             btn.config(bg=BG_COLOR)
             
         def on_click(e):
-            self.cmd_queue.put(('show_lang', (offset_x, offset_y)))
+            self.engine.on_xvoice_click(offset_x, offset_y)
 
         btn.bind("<Enter>", on_enter)
         btn.bind("<Leave>", on_leave)

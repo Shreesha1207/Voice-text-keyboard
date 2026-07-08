@@ -6,6 +6,8 @@ from writing import selection
 def perform_translation(
     backend_client: BackendClient, 
     target_language: str, 
+    selected_text: str,
+    prev_clipboard: str,
     on_success: Callable[[str], Any],
     on_error: Callable[[str], Any],
     on_loading: Callable[[], Any]
@@ -16,13 +18,7 @@ def perform_translation(
     def _run():
         on_loading()
         
-        # 1. Grab selection and backup clipboard
-        selected_text, prev_clipboard = selection.get_selected_text_and_restore()
-        
-        if not selected_text:
-            on_error("No text selected to translate.")
-            return
-
+        # 1. Grab selection and backup clipboard (already done)
         # 2. Call Backend
         response = backend_client.transform_text(
             action="translate",
