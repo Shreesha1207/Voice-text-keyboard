@@ -46,6 +46,15 @@ class User(Base):
     preferred_language: Mapped[str] = mapped_column(String(10), default="en", server_default="'en'")
     is_translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
+    # ── Writing Engine ─────────────────────────────────────────────────────────
+    # Which Xvoice product(s) the user has paid for.
+    # Values: 'dictation' | 'writing' | 'platform'
+    plan_product: Mapped[str] = mapped_column(String(20), default="dictation", server_default="'dictation'")
+    # Monthly writing action counter (resets each calendar month)
+    writing_actions_this_month: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # Timestamp of the last quota reset — used to detect when a new month has started
+    writing_quota_reset_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # Password reset fields
     password_reset_token: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     password_reset_expires: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
@@ -53,6 +62,7 @@ class User(Base):
     sessions: Mapped[list["Session"]] = relationship("Session", back_populates="user")
     word_records: Mapped[list["WordRecord"]] = relationship("WordRecord", back_populates="user")
     unlocked_achievements: Mapped[list["UserAchievement"]] = relationship("UserAchievement", back_populates="user")
+    writing_actions: Mapped[list["WritingAction"]] = relationship("WritingAction", back_populates="user")
 
     @property
     def is_trial_expired(self) -> bool:
@@ -126,3 +136,26 @@ class UserAchievement(Base):
 
     user: Mapped["User"] = relationship("User", back_populates="unlocked_achievements")
     achievement: Mapped["Achievement"] = relationship("Achievement", back_populates="user_achievements")
+
+
+class WritingAction(Base):
+    """One row per AI writing action performed by a user.
+    Powers the Writing dashboard history view, usage metering, and analytics."""
+    __tablename__ = "writing_actions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Action key, e.g. 'translate', 'improve', 'shorten', 'fix_grammar' …
+    action: Mapped[str] = mapped_column(String(50), nullable=False)
+    input_text: Mapped[str] = mapped_column(Text, nullable=False)
+    # NULL when the action failed
+    output_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Populated for translate; NULL for tone/style actions
+    language: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    success: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
+    chars_in: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    chars_out: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+    user: Mapped["User"] = relationship("User", back_populates="writing_actions")

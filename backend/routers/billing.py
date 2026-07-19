@@ -17,6 +17,25 @@ from dependencies import get_current_user
 # Ensure stripe API key is set for portal creation
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
+# Map Stripe price IDs to Xvoice product slugs.
+# Set STRIPE_DICTATION_PRICE_ID, STRIPE_WRITING_PRICE_ID, STRIPE_PLATFORM_PRICE_ID
+# in Railway env vars to match your Stripe Dashboard price IDs.
+PRICE_TO_PRODUCT: dict[str, str] = {k: v for k, v in [
+    (os.getenv("STRIPE_DICTATION_PRICE_ID"), "dictation"),
+    (os.getenv("STRIPE_WRITING_PRICE_ID"),   "writing"),
+    (os.getenv("STRIPE_PLATFORM_PRICE_ID"),  "platform"),
+] if k}  # skip None keys (env var not set)
+
+def _plan_product_from_subscription(sub_object: dict) -> str | None:
+    """Extract the plan_product slug from a Stripe subscription object.
+    Returns None if we can't determine the product (don't overwrite existing value)."""
+    items = sub_object.get("items", {}).get("data", [])
+    for item in items:
+        price_id = item.get("price", {}).get("id")
+        if price_id and price_id in PRICE_TO_PRODUCT:
+            return PRICE_TO_PRODUCT[price_id]
+    return None
+
 router = APIRouter(prefix="/api/billing", tags=["Billing"])
 
 @router.get("/status", response_model=BillingStatusResponse)
@@ -122,12 +141,26 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         user.subscription_status = SubscriptionStatus.PAID
         user.stripe_customer_id = data_object.get('customer')
         user.stripe_subscription_id = data_object.get('subscription')
+        # Fetch the full subscription to read the price_id → plan_product
+        sub_id = data_object.get('subscription')
+        if sub_id:
+            try:
+                sub = stripe.Subscription.retrieve(sub_id, expand=["items.data.price"])
+                product = _plan_product_from_subscription(sub)
+                if product:
+                    user.plan_product = product
+            except Exception as e:
+                logger.warning(f"Could not fetch subscription for plan_product: {e}")
         # We'll get current_period_end from the upcoming customer.subscription.updated event
 
     elif event_type == 'customer.subscription.updated':
         status = data_object.get('status')
         if status in ['active', 'trialing']:
             user.subscription_status = SubscriptionStatus.PAID
+            # Determine which product the subscription is for
+            product = _plan_product_from_subscription(data_object)
+            if product:
+                user.plan_product = product
         elif status == 'past_due':
             user.subscription_status = SubscriptionStatus.PAST_DUE
         elif status == 'canceled':
@@ -240,6 +273,12 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
     user.stripe_customer_id = data.get("stripe_customer_id")
     user.stripe_subscription_id = data.get("stripe_subscription_id")
     user.cancel_at_period_end = data.get("cancel_at_period_end", False)
+
+    # Update plan_product if provided by the Lovable sync payload
+    # Lovable should pass 'plan_product': 'dictation' | 'writing' | 'platform'
+    if plan_product := data.get("plan_product"):
+        if plan_product in ("dictation", "writing", "platform"):
+            user.plan_product = plan_product
     
     period_end = data.get("current_period_end")
     if period_end:

@@ -176,6 +176,28 @@ def _open_dashboard(icon, item):
 def _open_download(icon, item):
     webbrowser.open(f"{FRONTEND_URL}/download")
 
+def _view_logs(icon, item):
+    if sys.platform == "win32":
+        os.startfile(LOG_FILE)
+    elif sys.platform == "darwin":
+        subprocess.run(["open", LOG_FILE])
+    else:
+        subprocess.run(["xdg-open", LOG_FILE])
+
+def _export_logs(icon, item):
+    import shutil
+    try:
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        dest = os.path.join(desktop, "xvoice_logs.txt")
+        shutil.copy(LOG_FILE, dest)
+        safe_notify(f"Logs exported to Desktop", "Xvoice")
+    except Exception as e:
+        logger.error(f"Failed to export logs: {e}")
+        safe_notify("Failed to export logs", "Xvoice")
+
+def _report_issue(icon, item):
+    webbrowser.open("mailto:support@xvoice.com")
+
 def _toggle_translation(icon, item):
     global IS_TRANSLATION_ENABLED
     new_state = not IS_TRANSLATION_ENABLED
@@ -249,15 +271,85 @@ def safe_notify(msg, title="Xvoice"):
         except Exception:
             pass
 
+# Common languages shown directly in the tray submenu
+_COMMON_LANGUAGES = [
+    ("English",            "en"),
+    ("Hindi",              "hi"),
+    ("Spanish",            "es"),
+    ("French",             "fr"),
+    ("German",             "de"),
+    ("Chinese (Mandarin)", "zh"),
+    ("Arabic",             "ar"),
+    ("Portuguese",         "pt"),
+    ("Japanese",           "ja"),
+    ("Korean",             "ko"),
+]
+
+def _set_language(lang_code):
+    """Return a callback that sets PREFERRED_LANGUAGE to lang_code."""
+    def _callback(icon, item):
+        global PREFERRED_LANGUAGE
+        PREFERRED_LANGUAGE = lang_code
+        token = load_token()
+        if token:
+            try:
+                requests.patch(
+                    f"{RAILWAY_URL}/auth/language",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"preferred_language": lang_code},
+                    timeout=5
+                )
+            except Exception as e:
+                logger.warning(f"Failed to sync language to server: {e}")
+        display_name = next((name for name, code in _COMMON_LANGUAGES if code == lang_code), lang_code)
+        safe_notify(f"Language set to {display_name}", "Xvoice")
+        logger.info(f"Preferred language changed to: {lang_code}")
+    return _callback
+
+def _more_languages(icon, item):
+    """Open the Language & Translation section on the dashboard settings page."""
+    webbrowser.open(f"{FRONTEND_URL}/settings")
+
+def _build_language_menu():
+    """Build the language submenu dynamically so the checkmark always
+    reflects the current PREFERRED_LANGUAGE at render time."""
+    items = []
+    for name, code in _COMMON_LANGUAGES:
+        # Capture `code` in a default-arg closure so each lambda is independent
+        items.append(
+            pystray.MenuItem(
+                name,
+                _set_language(code),
+                checked=lambda item, c=code: PREFERRED_LANGUAGE == c,
+                radio=True,
+            )
+        )
+    items.append(pystray.Menu.SEPARATOR)
+    items.append(pystray.MenuItem("More languages…", _more_languages))
+    return pystray.Menu(*items)
+
 def start_tray():
     global tray_icon
 
     image = _make_icon_image()
+    help_menu = pystray.Menu(
+        pystray.MenuItem("View Logs", _view_logs),
+        pystray.MenuItem("Export Logs", _export_logs),
+        pystray.MenuItem("Report Issue", _report_issue)
+    )
+
+    # NOTE: default=True is intentionally omitted — on Windows it causes
+    # pystray to render a duplicate clickable label at the very top of the
+    # context menu (the extra "Xvoice" button the user sees).  Double-click
+    # on the tray icon still works without it.
     menu = pystray.Menu(
-        pystray.MenuItem("Open Dashboard", _open_dashboard, default=True),
+        pystray.MenuItem("Open Dashboard", _open_dashboard),
         pystray.MenuItem("Download Page",  _open_download),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Language", _build_language_menu()),
         pystray.MenuItem("Enable Translation", _toggle_translation, checked=lambda item: IS_TRANSLATION_ENABLED),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Help", help_menu),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Refresh / Restart", _restart_app),
         pystray.MenuItem("Log Out",        _logout),

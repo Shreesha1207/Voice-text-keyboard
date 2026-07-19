@@ -7,6 +7,7 @@ import asyncio
 from worker import start_worker
 
 from routers import auth, stats, achievements, billing, transcribe, transform
+from models import Achievement, WritingAction  # noqa: F401 — imported so init_db creates the table
 
 import logging
 
@@ -21,9 +22,12 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:8080",
         "http://localhost:5173",
+        # Dictation dashboard
         "https://preview--happy-tiny-glance.lovable.app",
         "https://id-preview--29629b16-9d9f-4a0b-963b-efdedb055e28.lovable.app",
         "https://xvoicekeyboard.com",
+        # Writing dashboard (update with your actual Lovable Writing project URL)
+        "https://xvoicewriting.com",
     ], # For production, set to specific origins (Dashboard App)
     allow_credentials=True,
     allow_methods=["*"],

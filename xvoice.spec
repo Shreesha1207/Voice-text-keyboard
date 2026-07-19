@@ -25,6 +25,10 @@ a = Analysis(
         'pynput.keyboard._win32',   # Windows-specific backend
         'pynput.keyboard._xorg',    # Linux X11 backend
         'pynput.keyboard._darwin',  # macOS backend
+        'pynput.mouse',
+        'pynput.mouse._win32',
+        'pynput.mouse._xorg',
+        'pynput.mouse._darwin',
         'pystray',
         'pystray._win32',
         'pystray._xorg',
@@ -34,6 +38,8 @@ a = Analysis(
         'PIL',
         'PIL.Image',
         'PIL.ImageDraw',
+        'PIL._imaging',
+        'PIL._tkinter_finder',
         'requests',
         'json',
         'tempfile',
@@ -43,8 +49,9 @@ a = Analysis(
         'wave',
         'webbrowser',
         'http.server',
+        'pyperclip',
     ],
-    hookspath=[],
+    hookspath=['.'],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],

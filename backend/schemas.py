@@ -187,3 +187,36 @@ class SessionHistoryEntry(BaseModel):
     peak_wpm: Optional[float]
 
     model_config = {"from_attributes": True}
+
+
+# ─── Writing Engine ────────────────────────────────────────────────────────────
+
+class WritingValidateResponse(BaseModel):
+    """Returned by GET /api/writing/validate — mirrors the Dictation validate shape."""
+    allowed: bool
+    reason: str              # 'paid' | 'trial_active' | 'trial_expired' | 'quota_exceeded'
+    plan_product: str        # 'dictation' | 'writing' | 'platform'
+    writing_quota: int       # monthly action limit (0 = unlimited)
+    writing_used: int        # actions used this month
+    user_id: str
+
+
+class WritingActionHistoryEntry(BaseModel):
+    id: uuid.UUID
+    action: str
+    input_snippet: str       # first 120 chars of input
+    output_snippet: Optional[str]  # first 120 chars of output
+    language: Optional[str]
+    success: bool
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class WritingStatsResponse(BaseModel):
+    actions_this_month: int
+    quota: int               # 0 = unlimited
+    quota_resets_at: Optional[datetime]
+    total_actions_all_time: int
+    most_used_action: Optional[str]
+    chars_processed_all_time: int

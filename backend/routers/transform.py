@@ -1,16 +1,132 @@
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
 import logging
-from dependencies import get_current_user
-from models import User
-from openai import AsyncOpenAI
 import os
+from datetime import datetime, timezone
+
+from dependencies import get_current_user
+from database import get_db
+from models import User, WritingAction, SubscriptionStatus
+from schemas import WritingValidateResponse, WritingActionHistoryEntry, WritingStatsResponse
+from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/text", tags=["Text Transformation"])
+router = APIRouter(prefix="/api", tags=["Writing Engine"])
 
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", "sk-mock-key"))
+
+# ─────────────────────────────────────────────────────────────────────────────
+#   Constants
+# ─────────────────────────────────────────────────────────────────────────────
+
+FREE_WRITING_QUOTA = 30     # actions per month for trial / dictation-only users
+UNLIMITED_QUOTA    = 0      # sentinel: 0 means unlimited
+
+ALLOWED_ACTIONS = {
+    "translate", "improve", "shorten", "expand",
+    "professional", "casual", "persuasive",
+    "summarise", "rephrase", "fix_grammar",
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+#   System-prompt factory
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_system_prompt(action: str, target_language: str | None) -> str:
+    base = (
+        "Preserve all formatting, punctuation, line breaks, emojis, "
+        "numbering, and bullet lists unless the action explicitly requires changes. "
+        "Do not explain your work. Return only the transformed text."
+    )
+    prompts = {
+        "translate": (
+            f"You are a professional translator.\n"
+            f"Translate the provided text into {target_language or 'English'}.\n"
+            + base
+        ),
+        "improve": (
+            "You are an expert editor and writing coach.\n"
+            "Improve the clarity, flow, and quality of the text while keeping the original meaning.\n"
+            "Fix grammar, remove filler words, and strengthen word choice.\n"
+            + base
+        ),
+        "shorten": (
+            "You are a concise editor.\n"
+            "Shorten the text significantly while preserving all key information.\n"
+            "Eliminate redundancy, passive voice, and filler phrases.\n"
+            + base
+        ),
+        "expand": (
+            "You are a skilled writer.\n"
+            "Expand the text with more detail, examples, and context.\n"
+            "Keep the same tone and meaning but make it more comprehensive.\n"
+            + base
+        ),
+        "professional": (
+            "You are a business writing specialist.\n"
+            "Rewrite the text in a professional, formal business tone.\n"
+            "Use clear, confident language appropriate for workplace communication.\n"
+            + base
+        ),
+        "casual": (
+            "You are a friendly copywriter.\n"
+            "Rewrite the text in a casual, conversational tone.\n"
+            "Make it feel natural and approachable, as if talking to a friend.\n"
+            + base
+        ),
+        "persuasive": (
+            "You are a persuasion expert and copywriter.\n"
+            "Rewrite the text to be more compelling, persuasive, and motivating.\n"
+            "Emphasise benefits, use strong calls to action, and build urgency where appropriate.\n"
+            + base
+        ),
+        "summarise": (
+            "You are a precise summariser.\n"
+            "Summarise the text into a short, clear paragraph capturing the essential points.\n"
+            + base
+        ),
+        "rephrase": (
+            "You are a paraphrasing expert.\n"
+            "Rephrase the text using different words and sentence structures while keeping the exact same meaning.\n"
+            + base
+        ),
+        "fix_grammar": (
+            "You are a grammar and spelling editor.\n"
+            "Fix all grammar, spelling, and punctuation errors in the text.\n"
+            "Do not change the meaning, style, or structure — only fix mistakes.\n"
+            + base
+        ),
+    }
+    return prompts.get(action, prompts["improve"])
+
+# ─────────────────────────────────────────────────────────────────────────────
+#   Quota helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _writing_quota_for(user: User) -> int:
+    """Return the monthly action limit for this user. 0 = unlimited."""
+    if user.plan_product in ("writing", "platform"):
+        return UNLIMITED_QUOTA
+    if user.subscription_status == SubscriptionStatus.PAID:
+        # Paid dictation-only users get a generous but capped writing trial
+        return 100
+    return FREE_WRITING_QUOTA
+
+def _maybe_reset_quota(user: User) -> None:
+    """Reset the monthly counter if we've entered a new calendar month."""
+    now = datetime.now(timezone.utc)
+    last_reset = user.writing_quota_reset_at
+    if last_reset is None or last_reset.replace(tzinfo=timezone.utc).month != now.month \
+            or last_reset.replace(tzinfo=timezone.utc).year != now.year:
+        user.writing_actions_this_month = 0
+        user.writing_quota_reset_at = now.replace(tzinfo=None)
+
+# ─────────────────────────────────────────────────────────────────────────────
+#   Request / Response models
+# ─────────────────────────────────────────────────────────────────────────────
 
 class TransformRequest(BaseModel):
     action: str
@@ -22,47 +138,221 @@ class TransformResponse(BaseModel):
     result: str | None = None
     error: str | None = None
 
-@router.post("/transform", response_model=TransformResponse)
+# ─────────────────────────────────────────────────────────────────────────────
+#   POST /api/text/transform
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/text/transform", response_model=TransformResponse)
 async def transform_text(
     request: TransformRequest,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    """
-    Transforms text using AI. Currently supports 'translate' action.
-    """
+    """Transform text with any supported AI writing action."""
+
+    # 1. Validate action
+    if request.action not in ALLOWED_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown action '{request.action}'. "
+                   f"Allowed: {sorted(ALLOWED_ACTIONS)}"
+        )
+
+    # 2. Trial / subscription gate (same as transcribe)
     if current_user.is_trial_expired and current_user.tier == "trial":
-        logger.warning(f"User {current_user.id} attempted text transform but trial expired.")
         raise HTTPException(status_code=403, detail="Trial expired. Please upgrade.")
 
-    if request.action != "translate":
-        raise HTTPException(status_code=400, detail="Only 'translate' action is currently supported.")
-        
-    target_lang = request.target_language or "English"
+    # 3. Quota check + possible monthly reset
+    _maybe_reset_quota(current_user)
+    quota = _writing_quota_for(current_user)
+    if quota != UNLIMITED_QUOTA and current_user.writing_actions_this_month >= quota:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Monthly writing quota ({quota} actions) reached. "
+                   "Upgrade to Writing Pro for unlimited actions."
+        )
 
-    system_prompt = (
-        "You are a professional translator.\n"
-        f"Translate the provided text into {target_lang}.\n"
-        "Preserve formatting, punctuation, line breaks, emojis, numbering, and bullet lists.\n"
-        "Do not explain your work.\n"
-        "Return only the translated text."
-    )
-    
+    # 4. Dev mock
     if os.getenv("ENVIRONMENT") == "development" and not os.getenv("OPENAI_API_KEY"):
-         # Mock translation for dev
-         import asyncio
-         await asyncio.sleep(1)
-         return TransformResponse(success=True, result=f"[Mock {target_lang}] {request.text}")
+        import asyncio
+        await asyncio.sleep(0.5)
+        mock_result = f"[Mock {request.action}] {request.text}"
+        await _log_action(db, current_user, request, mock_result, success=True)
+        current_user.writing_actions_this_month += 1
+        await db.commit()
+        return TransformResponse(success=True, result=mock_result)
 
+    # 5. Call OpenAI
+    system_prompt = _build_system_prompt(request.action, request.target_language)
     try:
         chat_res = await client.chat.completions.create(
-             model="gpt-4o",
-             messages=[
-                 {"role": "system", "content": system_prompt},
-                 {"role": "user", "content": request.text}
-             ]
-         )
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": request.text},
+            ],
+        )
         result_text = chat_res.choices[0].message.content.strip()
+
+        # 6. Increment quota counter + log
+        current_user.writing_actions_this_month += 1
+        await _log_action(db, current_user, request, result_text, success=True)
+        await db.commit()
+
         return TransformResponse(success=True, result=result_text)
+
     except Exception as e:
-        logger.exception(f"Error transforming text for user {current_user.id}")
+        logger.exception(f"transform_text failed for user {current_user.id}: {e}")
+        await _log_action(db, current_user, request, None, success=False, error=str(e))
+        await db.commit()
         return TransformResponse(success=False, error=str(e))
+
+
+async def _log_action(
+    db: AsyncSession,
+    user: User,
+    req: TransformRequest,
+    result: str | None,
+    *,
+    success: bool,
+    error: str | None = None,
+) -> None:
+    """Insert a WritingAction row to power history + analytics."""
+    record = WritingAction(
+        user_id=user.id,
+        action=req.action,
+        input_text=req.text,
+        output_text=result,
+        language=req.target_language if req.action == "translate" else None,
+        success=success,
+        error_msg=error,
+        chars_in=len(req.text),
+        chars_out=len(result) if result else 0,
+    )
+    db.add(record)
+
+# ─────────────────────────────────────────────────────────────────────────────
+#   GET /api/writing/validate
+#   Mirror of GET /api/auth/validate — called by the desktop Writing Engine
+#   on startup to confirm auth and fetch Writing-specific settings.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/writing/validate", response_model=WritingValidateResponse)
+async def writing_validate(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Check if the user can use Xvoice Writing and return their quota state."""
+
+    _maybe_reset_quota(current_user)
+    quota = _writing_quota_for(current_user)
+
+    # Determine access
+    if current_user.subscription_status == SubscriptionStatus.PAID:
+        allowed = True
+        reason = "paid"
+    else:
+        delta = datetime.now(timezone.utc) - current_user.trial_start_at.replace(tzinfo=timezone.utc)
+        if delta.days >= 14:
+            allowed = False
+            reason = "trial_expired"
+        else:
+            allowed = True
+            reason = "trial_active"
+
+    # Quota override: even if trial is active, block if quota exhausted
+    if allowed and quota != UNLIMITED_QUOTA and current_user.writing_actions_this_month >= quota:
+        allowed = False
+        reason = "quota_exceeded"
+
+    await db.commit()  # persist any quota reset
+
+    return WritingValidateResponse(
+        allowed=allowed,
+        reason=reason,
+        plan_product=current_user.plan_product,
+        writing_quota=quota,
+        writing_used=current_user.writing_actions_this_month,
+        user_id=str(current_user.id),
+    )
+
+# ─────────────────────────────────────────────────────────────────────────────
+#   GET /api/writing/stats    — Writing dashboard usage stats
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/writing/stats", response_model=WritingStatsResponse)
+async def writing_stats(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    _maybe_reset_quota(current_user)
+    quota = _writing_quota_for(current_user)
+
+    # Total all-time
+    total_q = await db.execute(
+        select(func.count(WritingAction.id)).where(WritingAction.user_id == current_user.id)
+    )
+    total = total_q.scalar_one() or 0
+
+    # Most used action
+    mode_q = await db.execute(
+        select(WritingAction.action, func.count(WritingAction.id).label("cnt"))
+        .where(WritingAction.user_id == current_user.id)
+        .group_by(WritingAction.action)
+        .order_by(func.count(WritingAction.id).desc())
+        .limit(1)
+    )
+    mode_row = mode_q.first()
+    most_used = mode_row[0] if mode_row else None
+
+    # Total chars processed
+    chars_q = await db.execute(
+        select(func.coalesce(func.sum(WritingAction.chars_in), 0))
+        .where(WritingAction.user_id == current_user.id)
+    )
+    chars = chars_q.scalar_one() or 0
+
+    await db.commit()
+
+    return WritingStatsResponse(
+        actions_this_month=current_user.writing_actions_this_month,
+        quota=quota,
+        quota_resets_at=current_user.writing_quota_reset_at,
+        total_actions_all_time=total,
+        most_used_action=most_used,
+        chars_processed_all_time=chars,
+    )
+
+# ─────────────────────────────────────────────────────────────────────────────
+#   GET /api/writing/history  — Writing dashboard history table
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/writing/history", response_model=list[WritingActionHistoryEntry])
+async def writing_history(
+    limit: int = 20,
+    offset: int = 0,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(WritingAction)
+        .where(WritingAction.user_id == current_user.id)
+        .order_by(WritingAction.created_at.desc())
+        .limit(min(limit, 100))
+        .offset(offset)
+    )
+    rows = result.scalars().all()
+
+    SNIPPET_LEN = 120
+    return [
+        WritingActionHistoryEntry(
+            id=r.id,
+            action=r.action,
+            input_snippet=r.input_text[:SNIPPET_LEN],
+            output_snippet=r.output_text[:SNIPPET_LEN] if r.output_text else None,
+            language=r.language,
+            success=r.success,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
