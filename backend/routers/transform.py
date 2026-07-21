@@ -172,17 +172,7 @@ async def transform_text(
                    "Upgrade to Writing Pro for unlimited actions."
         )
 
-    # 4. Dev mock
-    if os.getenv("ENVIRONMENT") == "development" and not os.getenv("OPENAI_API_KEY"):
-        import asyncio
-        await asyncio.sleep(0.5)
-        mock_result = f"[Mock {request.action}] {request.text}"
-        await _log_action(db, current_user, request, mock_result, success=True)
-        current_user.writing_actions_this_month += 1
-        await db.commit()
-        return TransformResponse(success=True, result=mock_result)
-
-    # 5. Call OpenAI
+    # 4. Call OpenAI
     system_prompt = _build_system_prompt(request.action, request.target_language)
     try:
         chat_res = await client.chat.completions.create(
@@ -194,7 +184,7 @@ async def transform_text(
         )
         result_text = chat_res.choices[0].message.content.strip()
 
-        # 6. Increment quota counter + log
+        # 5. Increment quota counter + log
         current_user.writing_actions_this_month += 1
         await _log_action(db, current_user, request, result_text, success=True)
         await db.commit()
