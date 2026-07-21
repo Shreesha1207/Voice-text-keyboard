@@ -83,6 +83,10 @@ class UserOut(BaseModel):
     custom_hotkey: str = "f8"
     preferred_language: str = "en"
     is_translation_enabled: bool = False
+    # ── Writing / Platform entitlements ────────────────────────────────
+    plan_product: str = "dictation"        # dictation | writing | platform
+    writing_enabled: bool = False          # True when user may use Writing Engine
+    dictation_enabled: bool = True         # True when user may use Dictation
 
     model_config = {"from_attributes": True}
 
@@ -220,3 +224,62 @@ class WritingStatsResponse(BaseModel):
     total_actions_all_time: int
     most_used_action: Optional[str]
     chars_processed_all_time: int
+
+
+# ─── Writing Rewrite (Lovable frontend shape) ─────────────────────────────────
+
+class WritingRewriteRequest(BaseModel):
+    action: str                            # improve | professional | shorten …
+    text: str = Field(..., max_length=8000)
+    tone: Optional[str] = "neutral"        # neutral | professional | friendly | confident | casual
+    language: Optional[str] = "en"        # ISO code; only used for translate
+
+
+class WritingRewriteResponse(BaseModel):
+    id: uuid.UUID
+    action: str
+    output: str
+    tokens_in: int
+    tokens_out: int
+
+
+# ─── Writing Usage (Lovable dashboard shape) ──────────────────────────────────
+
+class DailyWritingCount(BaseModel):
+    date: str    # ISO date e.g. "2026-07-14"
+    count: int
+
+
+class WritingUsageResponse(BaseModel):
+    total_rewrites: int
+    chars_saved_estimate: int
+    top_action: Optional[str]
+    by_action: dict[str, int]
+    daily: list[DailyWritingCount]
+
+
+# ─── Writing Preferences ──────────────────────────────────────────────────────
+
+class WritingPreferencesOut(BaseModel):
+    default_action: str = "improve"
+    default_tone: str = "neutral"
+    default_language: str = "en"
+    auto_replace: bool = False
+    show_preview: bool = True
+    custom_hotkey: str = "right_click"
+    updated_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class WritingPreferencesUpdate(BaseModel):
+    default_action: Optional[str] = None
+    default_tone: Optional[str] = None
+    default_language: Optional[str] = None
+    auto_replace: Optional[bool] = None
+    show_preview: Optional[bool] = None
+    custom_hotkey: Optional[str] = None
+
+
+class WritingHotkeyUpdate(BaseModel):
+    hotkey: str = Field(..., max_length=30)

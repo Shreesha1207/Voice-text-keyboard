@@ -63,6 +63,7 @@ class User(Base):
     word_records: Mapped[list["WordRecord"]] = relationship("WordRecord", back_populates="user")
     unlocked_achievements: Mapped[list["UserAchievement"]] = relationship("UserAchievement", back_populates="user")
     writing_actions: Mapped[list["WritingAction"]] = relationship("WritingAction", back_populates="user")
+    writing_preferences: Mapped["WritingPreferences | None"] = relationship("WritingPreferences", back_populates="user", uselist=False)
 
     @property
     def is_trial_expired(self) -> bool:
@@ -159,3 +160,34 @@ class WritingAction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
     user: Mapped["User"] = relationship("User", back_populates="writing_actions")
+
+    # ── extended fields for Lovable dashboard ──────────────────────────────────
+    tone: Mapped[str | None] = mapped_column(String(50), nullable=True)   # neutral/professional/friendly/confident/casual
+    tokens_in: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tokens_out: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class WritingPreferences(Base):
+    """One row per user — stores their Writing Engine default settings.
+    Created with defaults on first GET; updated via PATCH."""
+    __tablename__ = "writing_preferences"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True, nullable=False
+    )
+    # Default action shown pre-selected in the action menu
+    default_action: Mapped[str] = mapped_column(String(50), default="improve", server_default="'improve'")
+    # Default tone applied when not translate
+    default_tone: Mapped[str] = mapped_column(String(50), default="neutral", server_default="'neutral'")
+    # Default target language for translate action
+    default_language: Mapped[str] = mapped_column(String(20), default="en", server_default="'en'")
+    # When True: replace selection immediately; when False: show VS Code-style preview
+    auto_replace: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Show the inline diff preview widget
+    show_preview: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    # Separate hotkey from dictation (stored for desktop app sync; actual trigger is right-click)
+    custom_hotkey: Mapped[str] = mapped_column(String(30), default="right_click", server_default="'right_click'")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user: Mapped["User"] = relationship("User", back_populates="writing_preferences")

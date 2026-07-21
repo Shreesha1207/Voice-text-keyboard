@@ -202,8 +202,45 @@ async def validate_status(current_user: User = Depends(get_current_user)):
 
 @router.get("/me", response_model=UserOut)
 async def get_me(current_user: User = Depends(get_current_user)):
-    """Get current user profile"""
-    return current_user
+    """Get current user profile including writing/dictation entitlements."""
+    from models import SubscriptionStatus as SS
+
+    trial_active = False
+    if current_user.subscription_status not in (SS.PAID, SS.CANCELED):
+        delta = datetime.now(timezone.utc) - current_user.trial_start_at.replace(tzinfo=timezone.utc)
+        trial_active = delta.days < 14
+
+    is_paid = current_user.tier == "paid"
+
+    # Dictation: paid OR active trial
+    dictation_enabled = is_paid or trial_active
+
+    # Writing: writing/platform plan, OR active trial
+    writing_enabled = (
+        current_user.plan_product in ("writing", "platform")
+        or trial_active
+    )
+
+    return UserOut(
+        id=current_user.id,
+        email=current_user.email,
+        display_name=current_user.display_name,
+        created_at=current_user.created_at,
+        trial_start_at=current_user.trial_start_at,
+        subscription_status=current_user.subscription_status,
+        total_words=current_user.total_words,
+        streak_days=current_user.streak_days,
+        longest_streak=current_user.longest_streak,
+        is_leaderboard_opt_in=current_user.is_leaderboard_opt_in,
+        tier=current_user.tier,
+        timezone=current_user.timezone,
+        custom_hotkey=current_user.custom_hotkey,
+        preferred_language=current_user.preferred_language,
+        is_translation_enabled=current_user.is_translation_enabled,
+        plan_product=current_user.plan_product,
+        writing_enabled=writing_enabled,
+        dictation_enabled=dictation_enabled,
+    )
 
 @router.post("/logout")
 async def logout(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):

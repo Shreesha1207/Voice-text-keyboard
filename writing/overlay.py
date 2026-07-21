@@ -3,6 +3,7 @@ import threading
 import queue
 from writing.ui.language_menu import show_language_menu
 from writing.ui.action_menu import show_action_menu
+from writing.ui.preview_widget import show_preview_widget
 
 BG_COLOR = "#2B1B17"
 TEXT_COLOR = "#E8B89C"
@@ -75,6 +76,27 @@ class OverlayManager:
                                 lambda lang: self.engine.trigger_action("translate", lang, args[2], args[3]))
                         elif cmd == 'show_toast':
                             self._do_show_toast(*args)
+                        elif cmd == 'show_preview':
+                            # VS Code-style preview: show result, wait for Accept/Dismiss
+                            x, y, action, original_text, result_text, prev_clipboard = args
+                            from writing import selection as sel
+                            def _accept(rt=result_text, pc=prev_clipboard):
+                                try:
+                                    sel.replace_text(rt, pc)
+                                    self._do_show_toast((f"✓ Applied", True, 1800))
+                                except Exception as exc:
+                                    import logging
+                                    logging.error(f"Preview accept replace_text failed: {exc}")
+                            def _dismiss():
+                                pass  # original text stays untouched
+                            show_preview_widget(
+                                self.root, x, y,
+                                action=action,
+                                original_text=original_text,
+                                result_text=result_text,
+                                on_accept=_accept,
+                                on_dismiss=_dismiss,
+                            )
                 except queue.Empty:
                     pass
                 except Exception as e:

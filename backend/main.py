@@ -7,7 +7,8 @@ import asyncio
 from worker import start_worker
 
 from routers import auth, stats, achievements, billing, transcribe, transform
-from models import Achievement, WritingAction  # noqa: F401 — imported so init_db creates the table
+from routers import writing_prefs
+from models import Achievement, WritingAction, WritingPreferences  # noqa: F401 — ensures init_db creates all tables
 
 import logging
 
@@ -65,6 +66,7 @@ app.include_router(achievements.router)
 app.include_router(billing.router)
 app.include_router(transcribe.router)
 app.include_router(transform.router)
+app.include_router(writing_prefs.router)
 
 
 @app.get("/")

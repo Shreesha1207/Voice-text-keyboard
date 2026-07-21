@@ -84,6 +84,9 @@ class WritingEngine:
             return
 
         logging.info(f"on_xvoice_click: showing action menu for '{selected_text[:40]}...'")
+        # Store coords so trigger_action can position the preview widget
+        self._last_click_x = x
+        self._last_click_y = y
         # Clear cache now — action menu will use the values we pass directly
         self._cached_selected_text = None
         self._cached_prev_clipboard = None
@@ -93,22 +96,30 @@ class WritingEngine:
     def trigger_action(self, action: str, target_language: str | None,
                        selected_text: str, prev_clipboard: str):
         """Called by the UI when the user selects an action (and optional language)."""
-        action_label = f"{action}" + (f" → {target_language}" if target_language else "")
+        action_label = action.replace("_", " ").title()
+        if target_language:
+            action_label += f" → {target_language}"
+
+        # Capture click coords for preview placement (use cached coords)
+        click_x = getattr(self, "_last_click_x", 100)
+        click_y = getattr(self, "_last_click_y", 100)
 
         def on_success(result_text: str):
-            self.overlay_manager.cmd_queue.put(
-                ('show_toast', (f"✓ {action_label.title()}", True, 2000))
-            )
+            # Show VS Code-style preview — user can Accept or Dismiss
+            self.overlay_manager.cmd_queue.put((
+                "show_preview",
+                (click_x, click_y, action, selected_text, result_text, prev_clipboard),
+            ))
 
         def on_error(msg: str):
             logging.error(f"Action '{action}' error: {msg}")
             self.overlay_manager.cmd_queue.put(
-                ('show_toast', (f"✗ Failed: {msg[:40]}", False, 2500))
+                ("show_toast", (f"✗ {msg[:50]}", False, 2500))
             )
 
         def on_loading():
             self.overlay_manager.cmd_queue.put(
-                ('show_toast', (f"⏳ {action_label.title()}…", True, 6000))
+                ("show_toast", (f"⏳ {action_label}…", True, 8000))
             )
 
         perform_action(
