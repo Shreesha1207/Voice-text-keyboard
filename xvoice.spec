@@ -22,9 +22,9 @@ a = Analysis(
     hiddenimports=[
         'pynput',
         'pynput.keyboard',
-        'pynput.keyboard._win32',   # Windows-specific backend
-        'pynput.keyboard._xorg',    # Linux X11 backend
-        'pynput.keyboard._darwin',  # macOS backend
+        'pynput.keyboard._win32',
+        'pynput.keyboard._xorg',
+        'pynput.keyboard._darwin',
         'pynput.mouse',
         'pynput.mouse._win32',
         'pynput.mouse._xorg',
@@ -44,12 +44,24 @@ a = Analysis(
         'json',
         'tempfile',
         'logging',
-        'logging.handlers',         # RotatingFileHandler
+        'logging.handlers',
         'socket',
         'wave',
         'webbrowser',
         'http.server',
         'pyperclip',
+        # ── Writing Engine (conditionally started based on plan_product) ──
+        'tkinter',
+        'tkinter.ttk',
+        'writing.engine',
+        'writing.overlay',
+        'writing.selection',
+        'writing.clipboard',
+        'writing.backend_client',
+        'writing.actions.perform',
+        'writing.ui.action_menu',
+        'writing.ui.language_menu',
+        'writing.ui.preview_widget',
     ],
     hookspath=['.'],
     hooksconfig={},
