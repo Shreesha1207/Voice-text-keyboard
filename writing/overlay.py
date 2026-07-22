@@ -67,6 +67,16 @@ class OverlayManager:
                                 lambda lang: self.engine.trigger_action("translate", lang, args[2], args[3]))
                         elif cmd == 'show_toast':
                             self._do_show_toast(*args)
+                        elif cmd == 'auto_replace':
+                            # User has auto_replace enabled — apply result immediately
+                            result_text, prev_clipboard, action_label = args
+                            from writing import selection as sel
+                            try:
+                                sel.replace_text(result_text, prev_clipboard)
+                                self._do_show_toast(f"✓ {action_label}", True, 1800)
+                            except Exception as exc:
+                                logger.error(f"Auto-replace failed: {exc}")
+                                self._do_show_toast("✗ Replace failed", False, 2000)
                         elif cmd == 'show_preview':
                             x, y, action, original_text, result_text, prev_clipboard = args
                             from writing import selection as sel

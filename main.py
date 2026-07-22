@@ -16,7 +16,6 @@ import requests
 import pystray
 from PIL import Image, ImageDraw
 from contextlib import contextmanager
-from writing.engine import WritingEngine
 
 if sys.platform == "win32":
     import winsound
@@ -49,6 +48,7 @@ auth_success = False
 tray_icon = None
 PREFERRED_LANGUAGE = "en"
 IS_TRANSLATION_ENABLED = False
+PLAN_PRODUCT = "dictation"   # updated after auth; 'dictation' | 'writing' | 'platform'
 
 # ─────────────────────────────────────────────
 #   Single-instance lock
@@ -508,7 +508,7 @@ def wait_for_internet(poll_interval: float = 5.0) -> None:
     logger.info("Internet connection restored.")
 
 def require_auth():
-    global auth_success, PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED
+    global auth_success, PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT
 
     # ── Wait for a live network before touching any endpoint ──
     wait_for_internet()
@@ -527,6 +527,7 @@ def require_auth():
                 set_dynamic_hotkey(received_key)
                 PREFERRED_LANGUAGE = r.json().get('preferred_language', 'en')
                 IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', False)
+                PLAN_PRODUCT = r.json().get('plan_product', 'dictation')
                 _sync_timezone()
                 return True
         except Exception:
@@ -547,6 +548,7 @@ def require_auth():
                     set_dynamic_hotkey(received_key)
                     PREFERRED_LANGUAGE = r.json().get('preferred_language', 'en')
                     IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', False)
+                    PLAN_PRODUCT = r.json().get('plan_product', 'dictation')
                     safe_notify("Session renewed", f"Xvoice is ready. Press {HOTKEY.upper()} to dictate.")
                     _sync_timezone()
                     return True
@@ -953,11 +955,16 @@ if __name__ == "__main__":
     threading.Thread(target=_focus_listener_thread, daemon=True).start()
 
     setup_startup()
+    # Start voice dictation loop
     t = threading.Thread(target=voice_loop, daemon=True)
     t.start()
-    
-    # Initialize and start Writing Engine
-    writing_engine = WritingEngine(load_token)
-    writing_engine.start()
-    
+
+    # If the user has Writing or Platform plan, start the Writing Engine too.
+    # This means Platform users get both features from a single tray icon.
+    if PLAN_PRODUCT in ("writing", "platform"):
+        from writing.engine import WritingEngine
+        _writing_engine = WritingEngine(load_token)
+        _writing_engine.start()
+        logger.info(f"Writing Engine started (plan: {PLAN_PRODUCT}).")
+
     start_tray()   # blocks here — keeps app alive via tray

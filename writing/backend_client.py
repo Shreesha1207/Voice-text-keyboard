@@ -50,3 +50,20 @@ class BackendClient:
         except Exception as e:
             logger.error(f"Unexpected error in backend transform: {e}")
             return {"success": False, "error": "An unexpected error occurred."}
+
+    def get_preferences(self) -> Dict[str, Any]:
+        """Fetch the user's writing preferences from the backend."""
+        token = self.token_provider()
+        if not token:
+            return {}
+        try:
+            r = requests.get(
+                f"{self.base_url}/writing/preferences",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=5,
+            )
+            if r.status_code == 200:
+                return r.json()
+        except Exception as e:
+            logger.error(f"Failed to fetch writing preferences: {e}")
+        return {}
