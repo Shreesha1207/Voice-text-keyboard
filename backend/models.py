@@ -55,6 +55,14 @@ class User(Base):
     # Timestamp of the last quota reset — used to detect when a new month has started
     writing_quota_reset_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # Writing-specific free trial (separate from dictation trial)
+    # NULL = never started; set to utcnow() when POST /writing/trial/start is called
+    writing_trial_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # Daily writing action counter — resets at midnight UTC
+    writing_actions_today: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    writing_today_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # the date the counter applies to
+
     # Password reset fields
     password_reset_token: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     password_reset_expires: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
