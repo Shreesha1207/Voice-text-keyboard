@@ -199,6 +199,7 @@ _ACTION_PROMPTS: dict[str, str] = {
     "translate":    "You are a professional translator. Translate the provided text into {language}.",
     "improve":      "You are an expert editor. Improve the clarity, flow, and quality of the text while keeping the original meaning.",
     "shorten":      "You are a concise editor. Shorten the text while preserving all key information.",
+    "shorter":      "You are a concise editor. Shorten the text while preserving all key information.",
     "expand":       "You are a skilled writer. Expand the text with more detail, examples, and context.",
     "professional": "You are a business writing specialist. Rewrite the text in a professional, formal tone.",
     "casual":       "You are a friendly copywriter. Rewrite the text in a casual, conversational tone.",
@@ -206,6 +207,7 @@ _ACTION_PROMPTS: dict[str, str] = {
     "summarise":    "You are a precise summariser. Summarise the text into a short paragraph.",
     "rephrase":     "You are a paraphrasing expert. Rephrase the text using different words while keeping the exact same meaning.",
     "fix_grammar":  "You are a grammar editor. Fix all grammar, spelling, and punctuation errors. Do not change meaning or style.",
+    "grammar":      "You are a grammar editor. Fix all grammar, spelling, and punctuation errors. Do not change meaning or style.",
 }
 
 _BASE_INSTRUCTION = (
@@ -369,10 +371,14 @@ async def update_writing_hotkey(
 
 # Action keys Lovable expects in the usage breakdown
 _USAGE_ACTION_KEYS = [
-    "improve", "professional", "shorten", "translate",
-    "fix_grammar", "summarise", "casual", "expand",
-    "persuasive", "rephrase",
+    "improve", "professional", "shorter", "translate",
+    "grammar", "summarise",
 ]
+
+_ACTION_KEY_MAP = {
+    "shorten": "shorter",
+    "fix_grammar": "grammar",
+}
 
 @router.get("/writing/usage")
 async def writing_usage(
@@ -433,7 +439,8 @@ async def writing_usage(
     # Action breakdown
     by_action: dict[str, int] = defaultdict(int)
     for r in month_rows:
-        by_action[r.action] += 1
+        norm_key = _ACTION_KEY_MAP.get(r.action, r.action)
+        by_action[norm_key] += 1
 
     actions = [
         {"key": key, "used": by_action.get(key, 0)}
