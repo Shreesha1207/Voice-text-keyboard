@@ -23,8 +23,9 @@ else:
     winsound = None
 
 # --- Configuration URLs ---
-RAILWAY_URL = "https://voicetotext-keyboard-production.up.railway.app/api"
-FRONTEND_URL = "https://happy-tiny-glance.lovable.app"
+RAILWAY_URL          = "https://voicetotext-keyboard-production.up.railway.app/api"
+FRONTEND_URL         = "https://xvoicekeyboard.com"           # Dictation dashboard
+WRITING_DASHBOARD_URL = "https://xvoicekeyboard.com/writing/dashboard"  # Writing dashboard
 LOCAL_PORT = 45678
 
 # --- Audio Settings ---
@@ -344,6 +345,11 @@ def start_tray():
     # on the tray icon still works without it.
     menu = pystray.Menu(
         pystray.MenuItem("Open Dashboard", _open_dashboard),
+        pystray.MenuItem(
+            "Open Writing Dashboard",
+            lambda icon, item: webbrowser.open(WRITING_DASHBOARD_URL),
+            visible=lambda item: PLAN_PRODUCT in ("writing", "platform"),
+        ),
         pystray.MenuItem("Download Page",  _open_download),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Language", _build_language_menu()),
