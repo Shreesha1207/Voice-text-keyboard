@@ -376,7 +376,7 @@ _USAGE_ACTION_KEYS = [
 
 @router.get("/writing/usage")
 async def writing_usage(
-    range: str = Query(default="7d", pattern="^(7d|30d)$"),
+    period: str = Query(default="7d", pattern="^(7d|30d)$"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
