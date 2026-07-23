@@ -409,7 +409,17 @@ def load_refresh_token():
 
 def save_token(access_token, refresh_token=None):
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    data = {'access_token': access_token}
+    # Merge into the existing config instead of overwriting it, so we never wipe
+    # keys owned by the Writing side (e.g. recent_lang) — dictation and writing
+    # share config.json but must not clobber each other's local state.
+    data = {}
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+    data['access_token'] = access_token
     if refresh_token:
         data['refresh_token'] = refresh_token
     with open(CONFIG_FILE, 'w') as f:
