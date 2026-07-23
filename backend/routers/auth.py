@@ -171,6 +171,7 @@ async def validate_status(current_user: User = Depends(get_current_user)):
     allowed = True
     reason = "active"
     trial_remaining = None
+    trial_active = False   # dictation trial active (non-paid user within 14-day window)
 
     if current_user.subscription_status == SubscriptionStatus.PAID:
         allowed = True
@@ -186,6 +187,7 @@ async def validate_status(current_user: User = Depends(get_current_user)):
             if current_user.subscription_status != SubscriptionStatus.EXPIRED:
                  current_user.subscription_status = SubscriptionStatus.EXPIRED
         else:
+            trial_active = True
             trial_remaining = 14 - days_used
             reason = "trial_active"
 
