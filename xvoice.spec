@@ -33,6 +33,14 @@ try:
 except Exception:
     pass
 
+# certifi's CA bundle (cacert.pem) must be bundled or every HTTPS call / token
+# refresh fails with "Could not find a suitable TLS CA certificate bundle".
+try:
+    import certifi
+    datas.append((certifi.where(), 'certifi'))
+except Exception:
+    pass
+
 a = Analysis(
     ['main.py'],
     pathex=[],
