@@ -50,6 +50,7 @@ tray_icon = None
 PREFERRED_LANGUAGE = "en"
 IS_TRANSLATION_ENABLED = False
 PLAN_PRODUCT = "dictation"   # updated after auth; 'dictation' | 'writing' | 'platform'
+WRITING_ENABLED = False     # updated after auth; True if user has writing access (paid or trial)
 
 # ─────────────────────────────────────────────
 #   Single-instance lock
@@ -514,7 +515,7 @@ def wait_for_internet(poll_interval: float = 5.0) -> None:
     logger.info("Internet connection restored.")
 
 def require_auth():
-    global auth_success, PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT
+    global auth_success, PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT, WRITING_ENABLED
 
     # ── Wait for a live network before touching any endpoint ──
     wait_for_internet()
@@ -534,6 +535,7 @@ def require_auth():
                 PREFERRED_LANGUAGE = r.json().get('preferred_language', 'en')
                 IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', False)
                 PLAN_PRODUCT = r.json().get('plan_product', 'dictation')
+                WRITING_ENABLED = r.json().get('writing_enabled', False)
                 _sync_timezone()
                 return True
         except Exception:
@@ -555,6 +557,7 @@ def require_auth():
                     PREFERRED_LANGUAGE = r.json().get('preferred_language', 'en')
                     IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', False)
                     PLAN_PRODUCT = r.json().get('plan_product', 'dictation')
+                    WRITING_ENABLED = r.json().get('writing_enabled', False)
                     safe_notify("Session renewed", f"Xvoice is ready. Press {HOTKEY.upper()} to dictate.")
                     _sync_timezone()
                     return True
@@ -595,6 +598,8 @@ def require_auth():
                 set_dynamic_hotkey(r.json().get('custom_hotkey', 'f8'))
                 PREFERRED_LANGUAGE = r.json().get('preferred_language', 'en')
                 IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', False)
+                PLAN_PRODUCT = r.json().get('plan_product', 'dictation')
+                WRITING_ENABLED = r.json().get('writing_enabled', False)
         except Exception:
             pass
 
@@ -965,12 +970,11 @@ if __name__ == "__main__":
     t = threading.Thread(target=voice_loop, daemon=True)
     t.start()
 
-    # If the user has Writing or Platform plan, start the Writing Engine too.
-    # This means Platform users get both features from a single tray icon.
-    if PLAN_PRODUCT in ("writing", "platform"):
+    # If writing is enabled (paid plan or free trial), start the Writing Engine.
+    if WRITING_ENABLED or PLAN_PRODUCT in ("writing", "platform"):
         from writing.engine import WritingEngine
         _writing_engine = WritingEngine(load_token)
         _writing_engine.start()
-        logger.info(f"Writing Engine started (plan: {PLAN_PRODUCT}).")
+        logger.info(f"Writing Engine started (plan: {PLAN_PRODUCT}, writing_enabled: {WRITING_ENABLED}).")
 
     start_tray()   # blocks here — keeps app alive via tray

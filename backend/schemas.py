@@ -42,6 +42,9 @@ class ValidateResponse(BaseModel):
     custom_hotkey: str = "f8"
     preferred_language: str = "en"
     is_translation_enabled: bool = False
+    plan_product: str = "dictation"
+    writing_enabled: bool = False
+    dictation_enabled: bool = True
 
 
 class HotkeyUpdate(BaseModel):

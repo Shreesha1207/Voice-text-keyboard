@@ -189,6 +189,25 @@ async def validate_status(current_user: User = Depends(get_current_user)):
             trial_remaining = 14 - days_used
             reason = "trial_active"
 
+    # Compute entitlements
+    dictation_enabled = (current_user.tier == "paid") or trial_active
+
+    # Check writing trial state
+    writing_trial_active = False
+    if current_user.writing_trial_started_at is not None:
+        w_started = current_user.writing_trial_started_at.replace(tzinfo=timezone.utc) if current_user.writing_trial_started_at.tzinfo is None else current_user.writing_trial_started_at
+        w_elapsed = (datetime.now(timezone.utc) - w_started).days
+        writing_trial_active = w_elapsed < 14
+
+    writing_enabled = (
+        current_user.plan_product in ("writing", "platform")
+        or writing_trial_active
+        or trial_active
+    )
+
+    if writing_enabled or dictation_enabled:
+        allowed = True
+
     return ValidateResponse(
         allowed=allowed,
         reason=reason,
@@ -197,7 +216,10 @@ async def validate_status(current_user: User = Depends(get_current_user)):
         user_id=str(current_user.id),
         custom_hotkey=current_user.custom_hotkey,
         preferred_language=current_user.preferred_language,
-        is_translation_enabled=current_user.is_translation_enabled
+        is_translation_enabled=current_user.is_translation_enabled,
+        plan_product=current_user.plan_product,
+        writing_enabled=writing_enabled,
+        dictation_enabled=dictation_enabled,
     )
 
 @router.get("/me", response_model=UserOut)
@@ -330,10 +352,7 @@ async def update_hotkey(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Update custom push-to-talk hotkey. Only available for Pro users."""
-    if current_user.tier != "paid":
-        raise HTTPException(status_code=403, detail="Custom hotkeys are a Pro feature.")
-        
+    """Update custom push-to-talk hotkey."""
     hotkey = data.hotkey.strip().lower()
     
     # Strict validation to prevent the desktop app from crashing
