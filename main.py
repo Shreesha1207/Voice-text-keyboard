@@ -1000,11 +1000,17 @@ if __name__ == "__main__":
     t = threading.Thread(target=voice_loop, daemon=True)
     t.start()
 
-    # If writing is enabled (paid plan or free trial), start the Writing Engine.
+    # If writing is enabled (writing/platform plan or an active writing trial),
+    # start the Writing Engine. Keyboard (dictation) and Writing are independent
+    # products in one binary — a failure to start Writing (e.g. a missing Qt
+    # dependency) must NEVER take down dictation, so this is fully guarded.
     if WRITING_ENABLED or PLAN_PRODUCT in ("writing", "platform"):
-        from writing.engine import WritingEngine
-        _writing_engine = WritingEngine(load_token)
-        _writing_engine.start()
-        logger.info(f"Writing Engine started (plan: {PLAN_PRODUCT}, writing_enabled: {WRITING_ENABLED}).")
+        try:
+            from writing.engine import WritingEngine
+            _writing_engine = WritingEngine(load_token)
+            _writing_engine.start()
+            logger.info(f"Writing Engine started (plan: {PLAN_PRODUCT}, writing_enabled: {WRITING_ENABLED}).")
+        except Exception as e:
+            logger.error(f"Writing Engine failed to start (dictation continues): {e}")
 
     start_tray()   # blocks here — keeps app alive via tray
