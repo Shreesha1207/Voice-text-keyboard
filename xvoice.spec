@@ -4,6 +4,7 @@
 
 import sys
 import os
+from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
@@ -13,6 +14,32 @@ block_cipher = None
 datas = []
 if sys.platform == 'win32' and os.path.isfile('ffmpeg.exe'):
     datas.append(('ffmpeg.exe', '.'))
+
+# setuptools' vendored jaraco.text ships a data file ("Lorem ipsum.txt") that the
+# pkg_resources runtime hook imports at startup. PySide6 pulls setuptools into the
+# bundle, and without this data file the frozen .exe crashes on launch with
+#   FileNotFoundError: ...setuptools\_vendor\jaraco\text\Lorem ipsum.txt
+# collect_data_files() does not reliably capture _vendor data across setuptools
+# versions, so bundle those .txt files directly to the exact path the hook expects.
+datas += collect_data_files('setuptools')
+try:
+    import setuptools as _st
+    _jaraco_text = os.path.join(os.path.dirname(_st.__file__), '_vendor', 'jaraco', 'text')
+    if os.path.isdir(_jaraco_text):
+        for _f in os.listdir(_jaraco_text):
+            if _f.endswith('.txt'):
+                datas.append((os.path.join(_jaraco_text, _f),
+                              os.path.join('setuptools', '_vendor', 'jaraco', 'text')))
+except Exception:
+    pass
+
+# certifi's CA bundle (cacert.pem) must be bundled or every HTTPS call / token
+# refresh fails with "Could not find a suitable TLS CA certificate bundle".
+try:
+    import certifi
+    datas.append((certifi.where(), 'certifi'))
+except Exception:
+    pass
 
 a = Analysis(
     ['main.py'],

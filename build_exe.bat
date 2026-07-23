@@ -5,7 +5,9 @@ echo ==========================================
 echo.
 
 echo [1/4] Installing dependencies...
-pip install pyaudio pynput webrtcvad-wheels python-dotenv requests pystray Pillow pyinstaller
+REM Install from requirements.txt so the build never drifts from the app's deps
+REM (this is what previously dropped PySide6 and broke the Writing engine + glow).
+pip install -r requirements.txt
 echo.
 
 echo [2/4] Fixing webrtcvad metadata (PyInstaller compatibility patch)...
