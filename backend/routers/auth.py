@@ -352,7 +352,10 @@ async def update_hotkey(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Update custom push-to-talk hotkey."""
+    """Update custom push-to-talk hotkey. Only available for Pro users."""
+    if current_user.tier != "paid":
+        raise HTTPException(status_code=403, detail="Custom hotkeys are a Pro feature.")
+
     hotkey = data.hotkey.strip().lower()
     
     # Strict validation to prevent the desktop app from crashing
