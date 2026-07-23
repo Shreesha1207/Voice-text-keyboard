@@ -20,8 +20,7 @@ logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  ▶▶ CHANGE THIS to set the glow / island accent color (any hex). ◀◀
-#     Default: brand warm sand, matching the rest of the Xvoice overlay.
-GLOW_COLOR = "#E8B89C"
+GLOW_COLOR = "#CCCCCC"
 # ─────────────────────────────────────────────────────────────────────────────
 
 ISLAND_TEXT   = "Xvoice is listening"
@@ -176,15 +175,19 @@ class ListeningOverlay:
         try:
             self._ensure_built()
             screen = self._QGuiApplication.primaryScreen()
-            geo = screen.geometry()
+            geo = screen.geometry()             # full screen — glow hugs true edges
+            avail = screen.availableGeometry()  # excludes taskbar — island sits above it
 
             self._glow.setGeometry(geo)
             self._glow.show()
             self._glow.raise_()
 
             self._island.adjustSize()
-            iw = self._island.width()
-            self._island.move(geo.x() + (geo.width() - iw) // 2, geo.y() + 18)
+            iw, ih = self._island.width(), self._island.height()
+            self._island.move(
+                avail.x() + (avail.width() - iw) // 2,
+                avail.y() + avail.height() - ih - 24,   # bottom-center, above the taskbar
+            )
             self._island.show()
             self._island.raise_()
 
