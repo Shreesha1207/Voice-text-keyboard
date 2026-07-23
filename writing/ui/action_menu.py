@@ -1,13 +1,22 @@
-import tkinter as tk
-from typing import Callable
+"""
+Xvoice Writing action picker (PySide6).
 
-BG_COLOR    = "#2B1B17"
-TEXT_COLOR  = "#E8B89C"
-HOVER_COLOR = "#3B2620"
-DIM_COLOR   = "#6B4A3A"
+show_action_menu(x, y, on_action) shows the floating action menu and returns the
+widget. on_action(action_key, target_language) fires when an item is chosen;
+target_language is None for everything except translate.
+"""
+from __future__ import annotations
 
-# All supported writing actions.
-# Each entry: (display_label, action_key, has_language_sub_menu)
+from typing import Callable, Optional
+
+from PySide6.QtWidgets import QPushButton, QLabel, QFrame
+from PySide6.QtCore import Qt, QTimer
+
+from writing.ui.qt_helpers import (
+    FramelessPopup, BG_COLOR, TEXT_COLOR, HOVER_COLOR, FONT_FAMILY,
+)
+
+# (display_label, action_key, has_language_sub_menu)
 ACTIONS = [
     ("✨  Improve writing",   "improve",       False),
     ("📝  Fix grammar",       "fix_grammar",   False),
@@ -27,87 +36,82 @@ LANGUAGES = [
     "Portuguese", "Korean",
 ]
 
+_MENU_TIMEOUT_MS = 6000
+
+_TITLE_QSS = (
+    f"color: {TEXT_COLOR}; font-family: '{FONT_FAMILY}'; "
+    f"font-size: 12px; font-weight: 600; padding: 6px 12px 4px 12px;"
+)
+_ROW_QSS = f"""
+    QPushButton {{
+        background: transparent;
+        color: {TEXT_COLOR};
+        border: none;
+        border-radius: 6px;
+        text-align: left;
+        padding: 7px 14px;
+        font-family: '{FONT_FAMILY}';
+        font-size: 13px;
+    }}
+    QPushButton:hover {{ background: {HOVER_COLOR}; }}
+"""
+
+
+def _title(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setStyleSheet(_TITLE_QSS)
+    return lbl
+
+
+def _separator() -> QFrame:
+    line = QFrame()
+    line.setFixedHeight(1)
+    line.setStyleSheet(f"background-color: {TEXT_COLOR}; border: none; margin: 2px 6px;")
+    return line
+
+
+def _row(text: str) -> QPushButton:
+    btn = QPushButton(text)
+    btn.setStyleSheet(_ROW_QSS)
+    btn.setCursor(Qt.PointingHandCursor)
+    btn.setFocusPolicy(Qt.NoFocus)
+    btn.setMinimumWidth(210)
+    return btn
+
 
 def show_action_menu(
-    root: tk.Tk,
     x: int,
     y: int,
-    on_action: Callable[[str, str | None], None],   # (action_key, language_or_None)
-) -> None:
-    """
-    Show the Xvoice Writing action picker at (x, y).
-    Calls on_action(action_key, target_language) when an item is chosen.
-    'target_language' is None for all actions except translate.
-    """
-    menu_win = tk.Toplevel(root)
-    menu_win.overrideredirect(True)
-    menu_win.attributes("-topmost", True)
-    menu_win.configure(bg=BG_COLOR, highlightbackground=TEXT_COLOR, highlightthickness=1)
-    menu_win.geometry(f"+{x}+{y + 35}")
+    on_action: Callable[[str, Optional[str]], None],
+) -> FramelessPopup:
+    menu = FramelessPopup(radius=12)
+    menu.body.addWidget(_title("✦ Xvoice Writing"))
+    menu.body.addWidget(_separator())
 
-    title = tk.Label(
-        menu_win, text="✦ Xvoice Writing",
-        bg=BG_COLOR, fg=TEXT_COLOR,
-        font=("Segoe UI", 9, "bold"), pady=5, padx=10,
-    )
-    title.pack(fill="x")
-
-    sep = tk.Frame(menu_win, bg=TEXT_COLOR, height=1)
-    sep.pack(fill="x", padx=5, pady=1)
-
-    # ── Language sub-menu helper ──────────────────────────────────────────────
-    def show_language_sub(parent_win: tk.Toplevel) -> None:
-        parent_win.destroy()
-        lang_win = tk.Toplevel(root)
-        lang_win.overrideredirect(True)
-        lang_win.attributes("-topmost", True)
-        lang_win.configure(bg=BG_COLOR, highlightbackground=TEXT_COLOR, highlightthickness=1)
-        lang_win.geometry(f"+{x}+{y + 35}")
-
-        tk.Label(
-            lang_win, text="🌐  Translate to…",
-            bg=BG_COLOR, fg=TEXT_COLOR,
-            font=("Segoe UI", 9, "bold"), pady=5, padx=10,
-        ).pack(fill="x")
-        tk.Frame(lang_win, bg=TEXT_COLOR, height=1).pack(fill="x", padx=5, pady=1)
-
-        def pick_lang(lang: str) -> None:
-            lang_win.destroy()
-            on_action("translate", lang)
-
+    def open_language_sub():
+        menu.close()
+        sub = FramelessPopup(radius=12)
+        sub.body.addWidget(_title("🌐  Translate to…"))
+        sub.body.addWidget(_separator())
         for lang in LANGUAGES:
-            lbl = tk.Label(
-                lang_win, text=lang,
-                bg=BG_COLOR, fg=TEXT_COLOR,
-                font=("Segoe UI", 9), anchor="w", padx=12, pady=3, cursor="hand2",
+            row = _row(lang)
+            row.clicked.connect(
+                lambda _=False, l=lang: (sub.close(), on_action("translate", l))
             )
-            lbl.pack(fill="x")
-            lbl.bind("<Enter>",    lambda e, w=lbl: w.config(bg=HOVER_COLOR))
-            lbl.bind("<Leave>",    lambda e, w=lbl: w.config(bg=BG_COLOR))
-            lbl.bind("<Button-1>", lambda e, l=lang: pick_lang(l))
+            sub.body.addWidget(row)
+        sub.show_at(x, y + 35)
+        QTimer.singleShot(_MENU_TIMEOUT_MS, sub.close)
 
-        lang_win.after(6000, lambda: lang_win.destroy() if lang_win.winfo_exists() else None)
-
-    # ── Render action rows ────────────────────────────────────────────────────
     for label, action_key, needs_lang in ACTIONS:
-        row_text = label + ("  ▶" if needs_lang else "")
-        lbl = tk.Label(
-            menu_win, text=row_text,
-            bg=BG_COLOR, fg=TEXT_COLOR,
-            font=("Segoe UI", 9), anchor="w", padx=12, pady=3, cursor="hand2",
-        )
-        lbl.pack(fill="x")
-        lbl.bind("<Enter>", lambda e, w=lbl: w.config(bg=HOVER_COLOR))
-        lbl.bind("<Leave>", lambda e, w=lbl: w.config(bg=BG_COLOR))
-
+        row = _row(label + ("   ▶" if needs_lang else ""))
         if needs_lang:
-            lbl.bind("<Button-1>", lambda e, mw=menu_win: show_language_sub(mw))
+            row.clicked.connect(lambda _=False: open_language_sub())
         else:
-            def _make_handler(ak: str):
-                def _handler(e):
-                    menu_win.destroy()
-                    on_action(ak, None)
-                return _handler
-            lbl.bind("<Button-1>", _make_handler(action_key))
+            row.clicked.connect(
+                lambda _=False, ak=action_key: (menu.close(), on_action(ak, None))
+            )
+        menu.body.addWidget(row)
 
-    menu_win.after(6000, lambda: menu_win.destroy() if menu_win.winfo_exists() else None)
+    menu.show_at(x, y + 35)
+    QTimer.singleShot(_MENU_TIMEOUT_MS, menu.close)
+    return menu

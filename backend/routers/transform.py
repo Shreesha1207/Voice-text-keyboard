@@ -158,9 +158,17 @@ async def transform_text(
                    f"Allowed: {sorted(ALLOWED_ACTIONS)}"
         )
 
-    # 2. Trial / subscription gate (same as transcribe)
-    if current_user.is_trial_expired and current_user.tier == "trial":
-        raise HTTPException(status_code=403, detail="Trial expired. Please upgrade.")
+    # 2. Writing entitlement gate.
+    #    Writing has its OWN trial (writing_trial_started_at), independent of the
+    #    dictation/keyboard trial. Block when that writing trial has expired or was
+    #    never started — unless the user is on a writing/platform plan.
+    from routers.writing_prefs import _writing_status
+    wstatus = _writing_status(current_user)
+    if wstatus["status"] in ("inactive", "expired"):
+        raise HTTPException(
+            status_code=403,
+            detail="Your Xvoice Writing trial has ended. Upgrade to keep using Writing.",
+        )
 
     # 3. Quota check + possible monthly reset
     _maybe_reset_quota(current_user)
@@ -237,18 +245,18 @@ async def writing_validate(
     _maybe_reset_quota(current_user)
     quota = _writing_quota_for(current_user)
 
-    # Determine access
-    if current_user.subscription_status == SubscriptionStatus.PAID:
-        allowed = True
-        reason = "paid"
-    else:
-        delta = datetime.now(timezone.utc) - current_user.trial_start_at.replace(tzinfo=timezone.utc)
-        if delta.days >= 14:
-            allowed = False
-            reason = "trial_expired"
-        else:
-            allowed = True
-            reason = "trial_active"
+    # Determine access from the WRITING trial (writing_trial_started_at), not the
+    # dictation trial — the two are independent.
+    from routers.writing_prefs import _writing_status
+    wstatus = _writing_status(current_user)
+    if wstatus["status"] == "paid":
+        allowed, reason = True, "paid"
+    elif wstatus["status"] == "trial":
+        allowed, reason = True, "trial_active"
+    elif wstatus["status"] == "expired":
+        allowed, reason = False, "trial_expired"
+    else:  # inactive — never started a writing trial
+        allowed, reason = False, "inactive"
 
     # Quota override: even if trial is active, block if quota exhausted
     if allowed and quota != UNLIMITED_QUOTA and current_user.writing_actions_this_month >= quota:

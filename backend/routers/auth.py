@@ -171,6 +171,7 @@ async def validate_status(current_user: User = Depends(get_current_user)):
     allowed = True
     reason = "active"
     trial_remaining = None
+    trial_active = False   # dictation trial active (non-paid user within 14-day window)
 
     if current_user.subscription_status == SubscriptionStatus.PAID:
         allowed = True
@@ -186,6 +187,7 @@ async def validate_status(current_user: User = Depends(get_current_user)):
             if current_user.subscription_status != SubscriptionStatus.EXPIRED:
                  current_user.subscription_status = SubscriptionStatus.EXPIRED
         else:
+            trial_active = True
             trial_remaining = 14 - days_used
             reason = "trial_active"
 
@@ -199,10 +201,11 @@ async def validate_status(current_user: User = Depends(get_current_user)):
         w_elapsed = (datetime.now(timezone.utc) - w_started).days
         writing_trial_active = w_elapsed < 14
 
+    # Writing access is governed by the WRITING trial only (writing_trial_started_at),
+    # independent of the dictation/keyboard trial — do NOT couple it to trial_active.
     writing_enabled = (
         current_user.plan_product in ("writing", "platform")
         or writing_trial_active
-        or trial_active
     )
 
     if writing_enabled or dictation_enabled:
@@ -234,13 +237,23 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
     is_paid = current_user.tier == "paid"
 
-    # Dictation: paid OR active trial
+    # Dictation: paid OR active dictation/keyboard trial
     dictation_enabled = is_paid or trial_active
 
-    # Writing: writing/platform plan, OR active trial
+    # Writing: writing/platform plan, OR an active WRITING trial (separate from the
+    # keyboard trial — keyed on writing_trial_started_at, 14-day window).
+    writing_trial_active = False
+    if current_user.writing_trial_started_at is not None:
+        w_started = (
+            current_user.writing_trial_started_at.replace(tzinfo=timezone.utc)
+            if current_user.writing_trial_started_at.tzinfo is None
+            else current_user.writing_trial_started_at
+        )
+        writing_trial_active = (datetime.now(timezone.utc) - w_started).days < 14
+
     writing_enabled = (
         current_user.plan_product in ("writing", "platform")
-        or trial_active
+        or writing_trial_active
     )
 
     return UserOut(
