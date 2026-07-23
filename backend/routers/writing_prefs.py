@@ -61,7 +61,7 @@ def _writing_status(user: User) -> dict:
       actions_today: int
       daily_limit: int | None  (None = unlimited)
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
 
     # Paid: plan_product covers writing OR platform
     is_paid = user.plan_product in ("writing", "platform")
@@ -76,13 +76,14 @@ def _writing_status(user: User) -> dict:
 
     # Trial started?
     if user.writing_trial_started_at is not None:
-        started = user.writing_trial_started_at.replace(tzinfo=timezone.utc)
+        started = user.writing_trial_started_at
         elapsed = (now - started).days
         remaining = max(TRIAL_DAYS - elapsed, 0)
+        iso_str = started.replace(tzinfo=timezone.utc).isoformat()
         if remaining > 0:
             return {
                 "status": "trial",
-                "trial_started_at": started.isoformat(),
+                "trial_started_at": iso_str,
                 "trial_days_remaining": remaining,
                 "actions_today": _today_count(user),
                 "daily_limit": TRIAL_DAILY_CAP,
@@ -90,7 +91,7 @@ def _writing_status(user: User) -> dict:
         else:
             return {
                 "status": "expired",
-                "trial_started_at": started.isoformat(),
+                "trial_started_at": iso_str,
                 "trial_days_remaining": 0,
                 "actions_today": _today_count(user),
                 "daily_limit": TRIAL_DAILY_CAP,
@@ -108,7 +109,7 @@ def _writing_status(user: User) -> dict:
 
 def _today_count(user: User) -> int:
     """Return writing_actions_today, treating a stale date as 0."""
-    today = datetime.now(timezone.utc).date()
+    today = datetime.utcnow().date()
     if user.writing_today_date == today:
         return user.writing_actions_today
     return 0
@@ -138,7 +139,7 @@ def _enforce_daily_cap(user: User) -> None:
 
 def _bump_daily_counter(user: User) -> None:
     """Increment today's counter, resetting if the date has changed."""
-    today = datetime.now(timezone.utc).date()
+    today = datetime.utcnow().date()
     if user.writing_today_date != today:
         user.writing_actions_today = 0
         user.writing_today_date = today
@@ -176,9 +177,10 @@ async def start_writing_trial(
         # Already started or paid — return current state without changing anything
         return st
 
-    # Start the trial
-    current_user.writing_trial_started_at = datetime.now(timezone.utc)
+    # Start the trial using naive UTC datetime
+    current_user.writing_trial_started_at = datetime.utcnow()
     await db.commit()
+    await db.refresh(current_user)
 
     return _writing_status(current_user)
 
