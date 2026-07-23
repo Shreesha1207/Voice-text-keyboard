@@ -10,8 +10,8 @@ listener, the writing action worker threads) keep using the same thread-safe
 """
 import queue
 import logging
-import threading
 
+from writing.ui.qt_host import QtHost
 from writing.ui.qt_helpers import (
     FramelessPopup, screen_geometry_at,
     BG_COLOR, TEXT_COLOR, HOVER_COLOR, FONT_FAMILY,
@@ -24,39 +24,21 @@ class OverlayManager:
     def __init__(self, engine):
         self.engine = engine
         self.cmd_queue = queue.Queue()
-        self._app = None
         self._timer = None
         self.btn = None            # floating "✦ Xvoice" button popup
         self._btn_pos = (0, 0)     # clamped top-left of the button, for the click callback
 
-        self.ui_thread = threading.Thread(target=self._ui_loop, daemon=True)
-        self.ui_thread.start()
+        # Share the one process-wide Qt event loop (started on demand).
+        self._host = QtHost.instance()
+        self._host.start()
+        self._host.run_on_ui(self._install_timer)
 
-    # ── Qt event loop (runs in ui_thread) ────────────────────────────────────
-    def _ui_loop(self):
-        import sys
-        import ctypes
-
-        if sys.platform == "win32":
-            try:
-                ctypes.windll.shcore.SetProcessDpiAwareness(1)
-            except Exception:
-                pass
-
-        try:
-            from PySide6.QtWidgets import QApplication
-            from PySide6.QtCore import QTimer
-
-            self._app = QApplication.instance() or QApplication(sys.argv)
-            self._app.setQuitOnLastWindowClosed(False)
-
-            self._timer = QTimer()
-            self._timer.timeout.connect(self._check_queue)
-            self._timer.start(50)
-
-            self._app.exec()
-        except Exception as e:
-            logger.error(f"Overlay UI thread crashed: {e}")
+    # ── Runs on the shared Qt thread ─────────────────────────────────────────
+    def _install_timer(self):
+        from PySide6.QtCore import QTimer
+        self._timer = QTimer()
+        self._timer.timeout.connect(self._check_queue)
+        self._timer.start(50)
 
     def _check_queue(self):
         try:

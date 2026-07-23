@@ -775,11 +775,30 @@ def suppress_stderr():
         except Exception:
             pass
 
+# ─────────────────────────────────────────────
+#   "Listening" overlay (screen-edge glow + island)
+#   Shown while actively recording dictation.
+# ─────────────────────────────────────────────
+def _show_listening():
+    try:
+        from writing.ui.listening_overlay import show_listening
+        show_listening()
+    except Exception as e:
+        logger.error(f"show_listening failed: {e}")
+
+def _hide_listening():
+    try:
+        from writing.ui.listening_overlay import hide_listening
+        hide_listening()
+    except Exception as e:
+        logger.error(f"hide_listening failed: {e}")
+
 def record_audio(output_filename):
     with suppress_stderr():
         audio = pyaudio.PyAudio()
-        
+
     wait_hotkey(HOTKEY)
+    _show_listening()          # glow on — recording starts now
     if winsound:
         winsound.Beep(1000, 100)
 
@@ -913,7 +932,10 @@ def voice_loop():
 
                 raw_file, norm_file = get_temp_files()   # unique per recording
 
-                has_speech = record_audio(raw_file)
+                try:
+                    has_speech = record_audio(raw_file)
+                finally:
+                    _hide_listening()    # glow off the moment recording ends
                 if not has_speech:
                     # No audio captured; clean up and wait for next press
                     for f in (raw_file, norm_file):
@@ -966,6 +988,14 @@ if __name__ == "__main__":
     threading.Thread(target=_focus_listener_thread, daemon=True).start()
 
     setup_startup()
+
+    # Start the shared Qt UI host (powers the "listening" glow + writing overlays).
+    try:
+        from writing.ui.qt_host import QtHost
+        QtHost.instance().start()
+    except Exception as e:
+        logger.error(f"Failed to start Qt UI host: {e}")
+
     # Start voice dictation loop
     t = threading.Thread(target=voice_loop, daemon=True)
     t.start()
