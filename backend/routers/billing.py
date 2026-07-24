@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -13,6 +14,8 @@ from database import get_db
 from models import User, SubscriptionStatus
 from schemas import BillingStatusResponse
 from dependencies import get_current_user
+
+logger = logging.getLogger(__name__)
 
 # Ensure stripe API key is set for portal creation
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")

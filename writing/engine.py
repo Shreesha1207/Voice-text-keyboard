@@ -16,7 +16,7 @@ class WritingEngine:
         self.overlay_manager = OverlayManager(self)
         self.mouse_listener = None
         self._running = False
-        self._last_right_click_time = 0
+        self._left_press_pos = (0, 0)   # where the left button went down (drag detection)
         self._cached_selected_text = None
         self._cached_prev_clipboard = None
         self._last_click_x = 100
@@ -59,20 +59,38 @@ class WritingEngine:
         self.overlay_manager.hide_all()
 
     def _on_click(self, x, y, button, pressed):
-        if button == mouse.Button.right:
+        if button == mouse.Button.left:
             if pressed:
-                self._last_right_click_time = time.time()
-                threading.Thread(
-                    target=self._capture_selection_and_show,
-                    args=(x, y),
-                    daemon=True
-                ).start()
+                self._left_press_pos = (x, y)
+                # Detect a click on the Xvoice button via the GLOBAL hook, so it
+                # works even while a native context menu is grabbing the mouse
+                # (in which case Qt never receives the click on our overlay).
+                if self.overlay_manager.button_hit(x, y):
+                    self.on_xvoice_click(x, y)
+                    return
+            else:
+                px, py = self._left_press_pos
+                dragged = (abs(x - px) + abs(y - py)) > 10
+                if dragged:
+                    # Highlight-drag → offer the Xvoice button near the cursor.
+                    threading.Thread(
+                        target=self._capture_selection_and_show,
+                        args=(x, y),
+                        daemon=True,
+                    ).start()
+                else:
+                    # A plain click dismisses the button (unless it landed on it).
+                    self.overlay_manager.on_left_click(x, y)
             return
 
-        if button == mouse.Button.left and pressed:
-            if time.time() - self._last_right_click_time < 0.5:
-                return
-            self.overlay_manager.on_left_click(x, y)
+        # Right-click also offers the button (the app's own menu still opens, but
+        # the button click is caught by the global hook above, so it still works).
+        if button == mouse.Button.right and pressed:
+            threading.Thread(
+                target=self._capture_selection_and_show,
+                args=(x, y),
+                daemon=True,
+            ).start()
 
     def _capture_selection_and_show(self, x, y):
         from writing import selection

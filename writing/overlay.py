@@ -27,6 +27,7 @@ class OverlayManager:
         self._timer = None
         self.btn = None            # floating "✦ Xvoice" button popup
         self._btn_pos = (0, 0)     # clamped top-left of the button, for the click callback
+        self._btn_rect = None      # (left, top, w, h) of the visible button, for global-hook hit tests
 
         # Share the one process-wide Qt event loop (started on demand).
         self._host = QtHost.instance()
@@ -119,9 +120,18 @@ class OverlayManager:
         self.cmd_queue.put(("hide_btn", ()))
 
     # ── Floating "✦ Xvoice" button ───────────────────────────────────────────
+    def button_hit(self, x, y) -> bool:
+        """True if global point (x, y) is on the visible Xvoice button.
+        Read from the pynput hook thread; a plain-tuple read is safe enough."""
+        r = self._btn_rect
+        if not r:
+            return False
+        bx, by, bw, bh = r
+        return bx <= x <= bx + bw and by <= y <= by + bh
+
     def _do_show_button(self, x: int, y: int):
         from PySide6.QtWidgets import QPushButton
-        from PySide6.QtCore import Qt, QTimer
+        from PySide6.QtCore import Qt, QTimer, QPoint
 
         self._do_hide_button()
 
@@ -159,9 +169,14 @@ class OverlayManager:
 
         popup.show_at(offset_x, offset_y, clamp=False)
         self.btn = popup
-        QTimer.singleShot(4000, self._do_hide_button)
+        # Record the visible button's screen rect so the global mouse hook can tell
+        # when a click lands on it (Qt may never see the click if a native menu is up).
+        tl = popup.container.mapToGlobal(QPoint(0, 0))
+        self._btn_rect = (tl.x(), tl.y(), popup.container.width(), popup.container.height())
+        QTimer.singleShot(7000, self._do_hide_button)
 
     def _do_hide_button(self):
+        self._btn_rect = None
         if self.btn is not None:
             try:
                 self.btn.close()

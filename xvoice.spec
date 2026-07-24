@@ -4,23 +4,25 @@
 
 import sys
 import os
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_dynamic_libs
 
 block_cipher = None
 
-# ── Data files to bundle ────────────────────────────────────────────────
-# On Windows we ship ffmpeg.exe next to the binary so normalize_audio()
-# can find it at  os.path.dirname(sys.executable).
+# ── Data files & Binaries to bundle ──────────────────────────────────────
 datas = []
+binaries = []
+
+# PySide6 dynamic DLLs (Qt6Core.dll, Qt6Gui.dll, Qt6Widgets.dll, etc.) & plugins
+try:
+    binaries += collect_dynamic_libs('PySide6')
+    datas += collect_data_files('PySide6')
+except Exception:
+    pass
+
 if sys.platform == 'win32' and os.path.isfile('ffmpeg.exe'):
     datas.append(('ffmpeg.exe', '.'))
 
-# setuptools' vendored jaraco.text ships a data file ("Lorem ipsum.txt") that the
-# pkg_resources runtime hook imports at startup. PySide6 pulls setuptools into the
-# bundle, and without this data file the frozen .exe crashes on launch with
-#   FileNotFoundError: ...setuptools\_vendor\jaraco\text\Lorem ipsum.txt
-# collect_data_files() does not reliably capture _vendor data across setuptools
-# versions, so bundle those .txt files directly to the exact path the hook expects.
+# setuptools' vendored jaraco.text ships a data file ("Lorem ipsum.txt")
 datas += collect_data_files('setuptools')
 try:
     import setuptools as _st
@@ -33,18 +35,23 @@ try:
 except Exception:
     pass
 
-# certifi's CA bundle (cacert.pem) must be bundled or every HTTPS call / token
-# refresh fails with "Could not find a suitable TLS CA certificate bundle".
+# certifi's CA bundle (cacert.pem)
 try:
     import certifi
     datas.append((certifi.where(), 'certifi'))
 except Exception:
     pass
 
+pyside_hidden = []
+try:
+    pyside_hidden = collect_submodules('PySide6')
+except Exception:
+    pass
+
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=[
         'pynput',
@@ -77,8 +84,7 @@ a = Analysis(
         'webbrowser',
         'http.server',
         'pyperclip',
-        # ── Writing Engine (conditionally started based on plan_product) ──
-        # UI is built on PySide6/Qt (migrated from tkinter).
+        # ── PySide6 / Qt UI modules ──
         'PySide6',
         'PySide6.QtCore',
         'PySide6.QtGui',
@@ -96,7 +102,7 @@ a = Analysis(
         'writing.ui.action_menu',
         'writing.ui.language_menu',
         'writing.ui.preview_widget',
-    ],
+    ] + pyside_hidden,
     hookspath=['.'],
     hooksconfig={},
     runtime_hooks=[],
