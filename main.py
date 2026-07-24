@@ -924,6 +924,29 @@ def get_temp_files() -> tuple[str, str]:
 #   Main
 # ─────────────────────────────────────────────
 
+_writing_engine = None
+
+def _maybe_start_writing_engine():
+    """Start the Writing Engine once, AFTER require_auth() has populated the
+    entitlement globals (WRITING_ENABLED / PLAN_PRODUCT).
+
+    This must not run before auth completes: require_auth() runs inside
+    voice_loop's thread and does network calls, so the __main__ thread would
+    otherwise read WRITING_ENABLED while it's still the default False and never
+    start writing. Idempotent — the guard makes repeat calls safe.
+    """
+    global _writing_engine
+    if _writing_engine is not None:
+        return
+    if WRITING_ENABLED or PLAN_PRODUCT in ("writing", "platform"):
+        try:
+            from writing.engine import WritingEngine
+            _writing_engine = WritingEngine(load_token)
+            _writing_engine.start()
+            logger.info(f"Writing Engine started (plan: {PLAN_PRODUCT}, writing_enabled: {WRITING_ENABLED}).")
+        except Exception as e:
+            logger.error(f"Writing Engine failed to start (dictation continues): {e}")
+
 def voice_loop():
     """Runs the F8 recording loop in a background thread.
     An outer watchdog catches any crash, logs it, and restarts automatically
@@ -932,6 +955,7 @@ def voice_loop():
     while True:                          # ── watchdog: restart on any crash ──
         try:
             require_auth()
+            _maybe_start_writing_engine()   # after auth → WRITING_ENABLED is known
             while True:
                 # Re-auth if the token expired and silent refresh also failed
                 if need_reauth:
@@ -939,6 +963,7 @@ def voice_loop():
                     auth_success = False    # reset so login server loop runs
                     logger.info("Re-authenticating after session expiry.")
                     require_auth()
+                    _maybe_start_writing_engine()   # entitlement may now be active
 
                 raw_file, norm_file = get_temp_files()   # unique per recording
 
@@ -1010,17 +1035,10 @@ if __name__ == "__main__":
     t = threading.Thread(target=voice_loop, daemon=True)
     t.start()
 
-    # If writing is enabled (writing/platform plan or an active writing trial),
-    # start the Writing Engine. Keyboard (dictation) and Writing are independent
-    # products in one binary — a failure to start Writing (e.g. a missing Qt
-    # dependency) must NEVER take down dictation, so this is fully guarded.
-    if WRITING_ENABLED or PLAN_PRODUCT in ("writing", "platform"):
-        try:
-            from writing.engine import WritingEngine
-            _writing_engine = WritingEngine(load_token)
-            _writing_engine.start()
-            logger.info(f"Writing Engine started (plan: {PLAN_PRODUCT}, writing_enabled: {WRITING_ENABLED}).")
-        except Exception as e:
-            logger.error(f"Writing Engine failed to start (dictation continues): {e}")
+    # NOTE: the Writing Engine is started from inside voice_loop via
+    # _maybe_start_writing_engine(), AFTER require_auth() has populated
+    # WRITING_ENABLED / PLAN_PRODUCT. Starting it here would race that background
+    # auth and read the flags before they are set (they'd still be False), which
+    # is exactly why writing never started. Do not re-add a start call here.
 
     start_tray()   # blocks here — keeps app alive via tray
