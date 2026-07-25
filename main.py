@@ -752,7 +752,26 @@ def is_pressed(_):
     return hotkey_pressed
 
 def write_text(text):
-    pk.Controller().type(text)
+    """Inserts transcribed text via clipboard paste so Windows OS never drops characters."""
+    import pyperclip
+    old_cb = None
+    try:
+        old_cb = pyperclip.paste()
+    except Exception:
+        pass
+    try:
+        pyperclip.copy(text)
+        mod_key = pk.Key.cmd if sys.platform == "darwin" else pk.Key.ctrl
+        c = pk.Controller()
+        c.press(mod_key)
+        c.press('v')
+        c.release('v')
+        c.release(mod_key)
+        time.sleep(0.12)
+        if old_cb is not None:
+            pyperclip.copy(old_cb)
+    except Exception:
+        pk.Controller().type(text)
 
 try:
     vad = webrtcvad.Vad(1)
