@@ -3,7 +3,7 @@ Xvoice Writing action picker (PySide6).
 
 show_action_menu(x, y, on_action) shows the floating action menu and returns the
 widget. on_action(action_key, target_language) fires when an item is chosen;
-target_language is None for everything except translate.
+target_language is passed automatically for translate based on user settings.
 """
 from __future__ import annotations
 
@@ -16,24 +16,13 @@ from writing.ui.qt_helpers import (
     FramelessPopup, BG_COLOR, TEXT_COLOR, HOVER_COLOR, FONT_FAMILY,
 )
 
-# (display_label, action_key, has_language_sub_menu)
 ACTIONS = [
-    ("✨  Improve writing",   "improve",       False),
-    ("📝  Fix grammar",       "fix_grammar",   False),
-    ("📋  Make shorter",      "shorten",       False),
-    ("📣  Make longer",       "expand",        False),
-    ("💼  Professional tone", "professional",  False),
-    ("😊  Casual tone",       "casual",        False),
-    ("🔥  More persuasive",   "persuasive",    False),
-    ("📋  Summarise",         "summarise",     False),
-    ("🔄  Rephrase",          "rephrase",      False),
-    ("🌐  Translate…",        "translate",     True),   # opens language sub-menu
-]
-
-LANGUAGES = [
-    "English", "Spanish", "French", "German",
-    "Hindi",   "Arabic",  "Chinese", "Japanese",
-    "Portuguese", "Korean",
+    ("✨  Improve writing",   "improve"),
+    ("💼  Professional tone", "professional"),
+    ("📋  Make it shorter",   "shorter"),
+    ("🌐  Translate",         "translate"),
+    ("📝  Fix grammar",       "grammar"),
+    ("📊  Summarize",         "summarise"),
 ]
 
 _MENU_TIMEOUT_MS = 6000
@@ -88,28 +77,11 @@ def show_action_menu(
     menu.body.addWidget(_title("✦ Xvoice Writing"))
     menu.body.addWidget(_separator())
 
-    def open_language_sub():
-        menu.close()
-        sub = FramelessPopup(radius=12)
-        sub.body.addWidget(_title("🌐  Translate to…"))
-        sub.body.addWidget(_separator())
-        for lang in LANGUAGES:
-            row = _row(lang)
-            row.clicked.connect(
-                lambda _=False, l=lang: (sub.close(), on_action("translate", l))
-            )
-            sub.body.addWidget(row)
-        sub.show_at(x, y + 35)
-        QTimer.singleShot(_MENU_TIMEOUT_MS, sub.close)
-
-    for label, action_key, needs_lang in ACTIONS:
-        row = _row(label + ("   ▶" if needs_lang else ""))
-        if needs_lang:
-            row.clicked.connect(lambda _=False: open_language_sub())
-        else:
-            row.clicked.connect(
-                lambda _=False, ak=action_key: (menu.close(), on_action(ak, None))
-            )
+    for label, action_key in ACTIONS:
+        row = _row(label)
+        row.clicked.connect(
+            lambda _=False, ak=action_key: (menu.close(), on_action(ak, None))
+        )
         menu.body.addWidget(row)
 
     menu.show_at(x, y + 35)
