@@ -123,9 +123,6 @@ class WritingEngine:
     def trigger_action(self, action: str, target_language: str | None,
                        selected_text: str, prev_clipboard: str):
         """Called by the action menu when the user picks an action."""
-        if action == "translate" and not target_language:
-            target_language = self._default_language or "English"
-
         action_label = action.replace("_", " ").title()
         if target_language:
             action_label += f" → {target_language}"
