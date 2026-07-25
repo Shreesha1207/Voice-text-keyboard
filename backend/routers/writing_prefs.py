@@ -252,17 +252,29 @@ async def writing_rewrite(
 
     system_prompt = _build_prompt(req.action, req.tone, req.language)
 
-    try:
-        chat_res = await openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": req.text},
-            ],
-        )
-    except Exception as e:
-        logger.exception(f"writing_rewrite LLM call failed: {e}")
-        raise HTTPException(status_code=502, detail="AI service temporarily unavailable.")
+    # Retry up to 3 times if OpenAI encounters temporary 500 server errors
+    chat_res = None
+    last_err = None
+    for attempt in range(3):
+        try:
+            chat_res = await openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": req.text},
+                ],
+            )
+            break
+        except Exception as e:
+            last_err = e
+            logger.warning(f"writing_rewrite OpenAI attempt {attempt + 1} failed: {e}")
+            if attempt < 2:
+                import asyncio
+                await asyncio.sleep(1.0 * (attempt + 1))
+
+    if chat_res is None:
+        logger.exception(f"writing_rewrite LLM call failed after retries: {last_err}")
+        raise HTTPException(status_code=502, detail="AI service temporarily unavailable. Please try again.")
 
     output_text = chat_res.choices[0].message.content.strip()
     tokens_in   = chat_res.usage.prompt_tokens     if chat_res.usage else 0
@@ -299,6 +311,19 @@ async def writing_rewrite(
     )
 
 
+async def _get_or_create_prefs(db: AsyncSession, user_id: uuid.UUID) -> WritingPreferences:
+    """Safely fetch or create WritingPreferences using explicit async select to avoid MissingGreenlet."""
+    stmt = select(WritingPreferences).where(WritingPreferences.user_id == user_id)
+    res = await db.execute(stmt)
+    prefs = res.scalar_one_or_none()
+    if prefs is None:
+        prefs = WritingPreferences(user_id=user_id)
+        db.add(prefs)
+        await db.commit()
+        await db.refresh(prefs)
+    return prefs
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 #  GET /api/writing/preferences
 # ─────────────────────────────────────────────────────────────────────────────
@@ -309,13 +334,7 @@ async def get_writing_preferences(
     db: AsyncSession = Depends(get_db),
 ):
     """Return user's writing preferences. Creates a row with defaults on first call."""
-    prefs = current_user.writing_preferences
-    if prefs is None:
-        prefs = WritingPreferences(user_id=current_user.id)
-        db.add(prefs)
-        await db.commit()
-        await db.refresh(prefs)
-    return prefs
+    return await _get_or_create_prefs(db, current_user.id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -329,10 +348,7 @@ async def update_writing_preferences(
     db: AsyncSession = Depends(get_db),
 ):
     """Partial update of writing preferences."""
-    prefs = current_user.writing_preferences
-    if prefs is None:
-        prefs = WritingPreferences(user_id=current_user.id)
-        db.add(prefs)
+    prefs = await _get_or_create_prefs(db, current_user.id)
 
     update = data.model_dump(exclude_none=True)
     for field, value in update.items():
@@ -355,10 +371,7 @@ async def update_writing_hotkey(
     db: AsyncSession = Depends(get_db),
 ):
     """Update the Writing Engine custom hotkey (stored in writing_preferences)."""
-    prefs = current_user.writing_preferences
-    if prefs is None:
-        prefs = WritingPreferences(user_id=current_user.id)
-        db.add(prefs)
+    prefs = await _get_or_create_prefs(db, current_user.id)
 
     prefs.custom_hotkey = data.hotkey.strip()
     prefs.updated_at = datetime.utcnow()
