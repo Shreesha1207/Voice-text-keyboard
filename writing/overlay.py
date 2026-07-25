@@ -94,11 +94,25 @@ class OverlayManager:
             from writing.ui.preview_widget import show_preview_widget
 
             def _accept(rt=result_text, pc=prev_clipboard):
+                import time
+                import threading
+                def _do_paste():
+                    try:
+                        time.sleep(0.18)  # Let Windows OS return focus to the active text editor
+                        sel.replace_text(rt, pc)
+                        self.cmd_queue.put(("show_toast", ("✓ Applied", True, 1800)))
+                    except Exception as exc:
+                        logger.error(f"Preview accept failed: {exc}")
+
+                threading.Thread(target=_do_paste, daemon=True).start()
+
+            def _dismiss(pc=prev_clipboard):
                 try:
-                    sel.replace_text(rt, pc)
-                    self._do_show_toast("✓ Applied", True, 1800)
+                    from writing import clipboard as cb
+                    if pc is not None:
+                        cb.set_clipboard(pc)
                 except Exception as exc:
-                    logger.error(f"Preview accept failed: {exc}")
+                    logger.error(f"Preview dismiss failed: {exc}")
 
             show_preview_widget(
                 x, y,
@@ -106,7 +120,7 @@ class OverlayManager:
                 original_text=original_text,
                 result_text=result_text,
                 on_accept=_accept,
-                on_dismiss=lambda: None,
+                on_dismiss=_dismiss,
             )
 
     # ── Public API (called from other threads) ───────────────────────────────
