@@ -751,27 +751,34 @@ def wait_hotkey(_):
 def is_pressed(_):
     return hotkey_pressed
 
-def write_text(text):
-    """Inserts transcribed text via clipboard paste so Windows OS never drops characters."""
+def _paste_text(text):
+    """Clipboard-paste fallback (pyperclip + Ctrl+V). Plain text, not AI."""
     import pyperclip
-    old_cb = None
     try:
-        old_cb = pyperclip.paste()
+        prev = pyperclip.paste() or ""
+    except Exception:
+        prev = ""
+    pyperclip.copy(text)
+    time.sleep(0.05)
+    ctrl = pk.Controller()
+    mod = pk.Key.cmd if sys.platform == "darwin" else pk.Key.ctrl
+    ctrl.press(mod); ctrl.press('v'); ctrl.release('v'); ctrl.release(mod)
+    time.sleep(0.15)
+    try:
+        pyperclip.copy(prev)
     except Exception:
         pass
+
+def write_text(text):
+    """Primary: pynput keystroke typing. Fallback: clipboard paste, only if typing raises."""
     try:
-        pyperclip.copy(text)
-        mod_key = pk.Key.cmd if sys.platform == "darwin" else pk.Key.ctrl
-        c = pk.Controller()
-        c.press(mod_key)
-        c.press('v')
-        c.release('v')
-        c.release(mod_key)
-        time.sleep(0.12)
-        if old_cb is not None:
-            pyperclip.copy(old_cb)
-    except Exception:
         pk.Controller().type(text)
+    except Exception as e:
+        logger.warning(f"Keystroke typing failed ({e}); using clipboard paste.")
+        try:
+            _paste_text(text)
+        except Exception as e2:
+            logger.error(f"Clipboard paste fallback also failed: {e2}")
 
 try:
     vad = webrtcvad.Vad(1)
