@@ -27,6 +27,7 @@ def get_selected_text_and_restore() -> Tuple[Optional[str], Optional[str]]:
 def replace_text(new_text: str, prev_clipboard_content: str):
     """
     Replaces the currently selected text with new_text.
+    After the paste lands, the clipboard is restored or cleared so the AI-generated text does not linger.
     """
     # 1. Put the new text in the clipboard
     clipboard.set_clipboard(new_text)
@@ -38,3 +39,5 @@ def replace_text(new_text: str, prev_clipboard_content: str):
     time.sleep(0.15)
     if prev_clipboard_content is not None:
         clipboard.set_clipboard(prev_clipboard_content)
+    else:
+        clipboard.set_clipboard("")
