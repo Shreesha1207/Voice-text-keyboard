@@ -97,8 +97,9 @@ def show_preview_widget(
     win.body.addWidget(_hline())
 
     # ── Result text ───────────────────────────────────────────────────────────
+    is_summary = action.lower() in ("summarise", "summarize", "summary")
     preview_text = result_text
-    truncated = len(preview_text) > MAX_PREVIEW_CHARS
+    truncated = (len(preview_text) > MAX_PREVIEW_CHARS) and (not is_summary)
     if truncated:
         preview_text = preview_text[:MAX_PREVIEW_CHARS] + "…"
 
@@ -119,7 +120,10 @@ def show_preview_widget(
         f"font-family: '{FONT_FAMILY}'; font-size: 13px; border: none; }}"
     )
     lines = preview_text.count("\n") + 3
-    txt.setFixedHeight(min(max(lines, 3), 9) * 20)
+    if is_summary:
+        txt.setFixedHeight(min(max(lines, 4), 16) * 20)
+    else:
+        txt.setFixedHeight(min(max(lines, 3), 9) * 20)
     tw.addWidget(txt)
 
     if truncated:

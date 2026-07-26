@@ -39,11 +39,7 @@ def perform_action(
         if response.get("success"):
             result_text = response.get("result", "")
             if result_text:
-                try:
-                    selection.replace_text(result_text, prev_clipboard)
-                    on_success(result_text)
-                except Exception as e:
-                    on_error(f"Failed to replace text: {e}")
+                on_success(result_text)
             else:
                 on_error("Action returned empty result.")
         else:

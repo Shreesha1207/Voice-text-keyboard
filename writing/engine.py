@@ -132,16 +132,16 @@ class WritingEngine:
 
         click_x = self._last_click_x
         click_y = self._last_click_y
-        auto_replace = self._auto_replace   # snapshot at time of action
+        is_summary = action.lower() in ("summarise", "summarize", "summary")
 
         def on_success(result_text: str):
-            if auto_replace:
-                # User chose "Auto-replace" in settings → replace immediately
+            if self._auto_replace and not is_summary:
+                # User chose "Auto-replace" in settings and action is not summary → replace immediately
                 self.overlay_manager.cmd_queue.put(
                     ("auto_replace", (result_text, prev_clipboard, action_label))
                 )
             else:
-                # User chose "Preview before replacing" → show Accept/Dismiss widget
+                # Preview mode is ON, or action is Summary → show Accept/Dismiss widget
                 self.overlay_manager.cmd_queue.put((
                     "show_preview",
                     (click_x, click_y, action, selected_text, result_text, prev_clipboard),

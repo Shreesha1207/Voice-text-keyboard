@@ -30,12 +30,7 @@ def perform_translation(
         if response.get("success"):
             translated_text = response.get("result", "")
             if translated_text:
-                # 4. Paste over original selection
-                try:
-                    selection.replace_text(translated_text, prev_clipboard)
-                    on_success(translated_text)
-                except Exception as e:
-                    on_error(f"Failed to replace text: {e}")
+                on_success(translated_text)
             else:
                 on_error("Translation returned empty result.")
         else:
