@@ -5,21 +5,22 @@ import time
 def get_selected_text_and_restore() -> Tuple[Optional[str], Optional[str]]:
     """
     Attempts to get the selected text by simulating a copy operation.
-    It saves the previous clipboard, copies the selection, and then we return the text
-    and the previous clipboard content so it can be restored later.
+    Saves and restores the previous clipboard content so it isn't lost.
     """
     prev_clipboard = clipboard.get_clipboard()
     
-    # We clear the clipboard first so we can detect if the copy actually did anything 
-    # (e.g. if no text is selected)
+    # Clear clipboard to detect if copy succeeded
     clipboard.set_clipboard("")
     
     # Simulate copy
     copied_text = clipboard.copy_selection()
     
-    # If the text is empty, nothing was selected
-    if not copied_text or copied_text.strip() == "":
+    # Immediately restore the previous clipboard so system clipboard isn't polluted while user views preview
+    if prev_clipboard is not None:
         clipboard.set_clipboard(prev_clipboard)
+    
+    # If text is empty, nothing was selected
+    if not copied_text or copied_text.strip() == "":
         return None, prev_clipboard
         
     return copied_text, prev_clipboard
