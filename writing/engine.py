@@ -124,7 +124,11 @@ class WritingEngine:
                        selected_text: str, prev_clipboard: str):
         """Called by the action menu when the user picks an action."""
         if action == "translate" and not target_language:
-            target_language = self._default_language or "English"
+            # Position the language sub-menu right beside the action menu as a flyout
+            click_x = self._last_click_x + 215
+            click_y = self._last_click_y + 85
+            self.overlay_manager.cmd_queue.put(('show_lang', (click_x, click_y, selected_text, prev_clipboard)))
+            return
 
         action_label = action.replace("_", " ").title()
         if target_language:

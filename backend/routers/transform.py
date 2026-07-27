@@ -194,6 +194,8 @@ async def transform_text(
 
         # 5. Increment quota counter + log
         current_user.writing_actions_this_month += 1
+        from routers.writing_prefs import _bump_daily_counter
+        _bump_daily_counter(current_user)
         await _log_action(db, current_user, request, result_text, success=True)
         await db.commit()
 

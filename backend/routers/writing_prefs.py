@@ -36,6 +36,7 @@ from schemas import (
     DailyWritingCount,
     WritingRewriteRequest,
     WritingRewriteResponse,
+    WritingRecordRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -381,6 +382,45 @@ async def update_writing_hotkey(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  POST /api/writing/record
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/writing/record")
+async def record_writing_action(
+    req: WritingRecordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Explicitly record a writing action execution for usage metering and analytics.
+    Accepts action_key (or action) and char_count.
+    """
+    action_name = req.action_key or req.action or "improve"
+
+    _bump_daily_counter(current_user)
+    current_user.writing_actions_this_month += 1
+
+    record = WritingAction(
+        user_id=current_user.id,
+        action=action_name,
+        input_text="",
+        output_text="",
+        chars_in=req.char_count,
+        chars_out=req.char_count,
+        success=True,
+    )
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+
+    return {
+        "success": True,
+        "daily_used": _today_count(current_user),
+        "daily_limit": _writing_status(current_user)["daily_limit"],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  GET /api/writing/usage
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -393,6 +433,10 @@ _USAGE_ACTION_KEYS = [
 _ACTION_KEY_MAP = {
     "shorten": "shorter",
     "fix_grammar": "grammar",
+    "expand": "improve",
+    "rephrase": "improve",
+    "casual": "professional",
+    "persuasive": "professional",
 }
 
 @router.get("/writing/usage")

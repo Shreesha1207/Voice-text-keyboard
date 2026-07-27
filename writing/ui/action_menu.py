@@ -20,7 +20,7 @@ ACTIONS = [
     ("✨  Improve writing",   "improve"),
     ("💼  Professional tone", "professional"),
     ("📋  Make it shorter",   "shorten"),
-    ("🌐  Translate",         "translate"),
+    ("🌐  Translate  ▸",      "translate"),
     ("📝  Fix grammar",       "fix_grammar"),
     ("📊  Summarize",         "summarise"),
 ]

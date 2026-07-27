@@ -20,7 +20,7 @@ from writing.ui.qt_helpers import (
 
 LANGUAGES = [
     "English", "Spanish", "French", "German",
-    "Japanese", "Hindi", "More...",
+    "Japanese", "Hindi",
 ]
 
 # ── Config file for the most-recently-used language ──────────────────────────
@@ -32,7 +32,7 @@ else:
     CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "Xvoice")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 
-_MENU_TIMEOUT_MS = 5000
+_MENU_TIMEOUT_MS = 6000
 
 
 def load_recent_lang() -> Optional[str]:
@@ -103,7 +103,7 @@ def _row(text: str) -> QPushButton:
     )
     btn.setCursor(Qt.PointingHandCursor)
     btn.setFocusPolicy(Qt.NoFocus)
-    btn.setMinimumWidth(180)
+    btn.setMinimumWidth(190)
     return btn
 
 
@@ -111,29 +111,50 @@ def show_language_menu(
     x: int,
     y: int,
     on_select: Callable[[str], None],
+    custom_lang: Optional[str] = None,
 ) -> FramelessPopup:
     menu = FramelessPopup(radius=12)
-    menu.body.addWidget(_title("Translate"))
+    menu.body.addWidget(_title("🌐  Translate to..."))
 
     def select(lang: str) -> None:
-        if lang != "More...":
+        if "More languages" not in lang:
             save_recent_lang(lang)
-        menu.close()
-        if lang != "More...":
+            menu.close()
             on_select(lang)
+        else:
+            menu.close()
+            import webbrowser
+            try:
+                from main import FRONTEND_URL
+                webbrowser.open(f"{FRONTEND_URL}/settings")
+            except Exception:
+                webbrowser.open("https://xvoicekeyboard.com/settings")
 
     recent = load_recent_lang()
-    if recent and recent in LANGUAGES and recent != "More...":
-        row = _row(f"Recent: {recent}")
+    if recent:
+        row_text = f"Recent: {recent}  ✓"
+        row = _row(row_text)
         row.clicked.connect(lambda _=False, l=recent: select(l))
         menu.body.addWidget(row)
         menu.body.addWidget(_separator())
 
-    for lang in LANGUAGES:
-        row = _row(lang)
+    # Build the combined list of languages to show
+    langs_to_show = list(LANGUAGES)
+    if custom_lang and custom_lang.lower() not in [l.lower() for l in langs_to_show]:
+        langs_to_show.append(custom_lang)
+
+    for lang in langs_to_show:
+        is_active = (recent and lang.lower() == recent.lower())
+        label_text = f"{lang}  ✓" if is_active else lang
+        row = _row(label_text)
         row.clicked.connect(lambda _=False, l=lang: select(l))
         menu.body.addWidget(row)
 
-    menu.show_at(x, y + 35)
+    menu.body.addWidget(_separator())
+    more_row = _row("⚙  More languages...")
+    more_row.clicked.connect(lambda _=False: select("More languages..."))
+    menu.body.addWidget(more_row)
+
+    menu.show_at(x, y)
     QTimer.singleShot(_MENU_TIMEOUT_MS, menu.close)
     return menu

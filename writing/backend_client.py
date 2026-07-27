@@ -67,3 +67,22 @@ class BackendClient:
         except Exception as e:
             logger.error(f"Failed to fetch writing preferences: {e}")
         return {}
+
+    def record_writing_action(self, action: str, char_count: int = 0) -> Dict[str, Any]:
+        """Record a writing action execution for usage metering."""
+        token = self.token_provider()
+        if not token:
+            return {}
+        try:
+            r = requests.post(
+                f"{self.base_url}/writing/record",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"action_key": action, "char_count": char_count},
+                timeout=5,
+            )
+            if r.status_code == 200:
+                return r.json()
+        except Exception as e:
+            logger.error(f"Failed to record writing action: {e}")
+        return {}
+

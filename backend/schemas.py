@@ -246,6 +246,12 @@ class WritingRewriteResponse(BaseModel):
     tokens_out: int
 
 
+class WritingRecordRequest(BaseModel):
+    action_key: Optional[str] = None
+    action: Optional[str] = None
+    char_count: int = 0
+
+
 # ─── Writing Usage (Lovable dashboard shape) ──────────────────────────────────
 
 class DailyWritingCount(BaseModel):

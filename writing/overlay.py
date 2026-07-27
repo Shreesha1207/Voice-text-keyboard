@@ -76,6 +76,7 @@ class OverlayManager:
             show_language_menu(
                 x, y,
                 lambda lang: self.engine.trigger_action("translate", lang, selected_text, prev_clipboard),
+                custom_lang=getattr(self.engine, "_default_language", None)
             )
         elif cmd == "show_toast":
             self._do_show_toast(*args)
