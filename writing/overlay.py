@@ -68,6 +68,7 @@ class OverlayManager:
                 x, y,
                 lambda action, lang, st=selected_text, pc=prev_clipboard:
                     self.engine.trigger_action(action, lang, st, pc),
+                default_lang=getattr(self.engine, "_default_language", None),
             )
         elif cmd == "show_lang":
             self._do_hide_button()

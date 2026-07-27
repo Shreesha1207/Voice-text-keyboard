@@ -10,11 +10,12 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from PySide6.QtWidgets import QPushButton, QLabel, QFrame
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QPoint
 
 from writing.ui.qt_helpers import (
     FramelessPopup, BG_COLOR, TEXT_COLOR, HOVER_COLOR, FONT_FAMILY,
 )
+from writing.ui.language_menu import show_language_menu
 
 ACTIONS = [
     ("✨  Improve writing",   "improve"),
@@ -72,24 +73,70 @@ def show_action_menu(
     x: int,
     y: int,
     on_action: Callable[[str, Optional[str]], None],
+    default_lang: Optional[str] = None,
 ) -> FramelessPopup:
     menu = FramelessPopup(radius=12)
     menu.body.addWidget(_title("✦ Xvoice Writing"))
     menu.body.addWidget(_separator())
 
+    sub_menu: Optional[FramelessPopup] = None
+
+    def close_all():
+        nonlocal sub_menu
+        if sub_menu is not None:
+            try:
+                sub_menu.close()
+            except Exception:
+                pass
+            sub_menu = None
+        try:
+            menu.close()
+        except Exception:
+            pass
+
+    menu.destroyed.connect(lambda: sub_menu.close() if sub_menu else None)
+
     for label, action_key in ACTIONS:
         row = _row(label)
-        
-        def make_callback(ak):
-            def callback(_=False):
-                if ak != "translate":
-                    menu.close()
-                on_action(ak, None)
-            return callback
-            
-        row.clicked.connect(make_callback(action_key))
+
+        if action_key == "translate":
+            def open_translate_submenu(_=False, btn=row):
+                nonlocal sub_menu
+                if sub_menu is not None:
+                    try:
+                        sub_menu.close()
+                    except Exception:
+                        pass
+                    sub_menu = None
+                    return
+
+                global_pos = btn.mapToGlobal(QPoint(btn.width() + 10, -5))
+                flyout_x = global_pos.x()
+                flyout_y = global_pos.y()
+
+                def on_lang_select(lang: str):
+                    close_all()
+                    on_action("translate", lang)
+
+                sub_menu = show_language_menu(
+                    flyout_x,
+                    flyout_y,
+                    on_lang_select,
+                    custom_lang=default_lang,
+                )
+
+            row.clicked.connect(open_translate_submenu)
+        else:
+            def make_action_callback(ak=action_key):
+                def callback(_=False):
+                    close_all()
+                    on_action(ak, None)
+                return callback
+
+            row.clicked.connect(make_action_callback())
+
         menu.body.addWidget(row)
 
     menu.show_at(x, y + 35)
-    QTimer.singleShot(_MENU_TIMEOUT_MS, menu.close)
+    QTimer.singleShot(_MENU_TIMEOUT_MS, close_all)
     return menu

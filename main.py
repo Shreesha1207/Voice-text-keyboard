@@ -51,6 +51,7 @@ PREFERRED_LANGUAGE = "en"
 IS_TRANSLATION_ENABLED = False
 PLAN_PRODUCT = "dictation"   # updated after auth; 'dictation' | 'writing' | 'platform'
 WRITING_ENABLED = False     # updated after auth; True if user has writing access (paid or trial)
+_last_sync_time = 0.0
 
 # ─────────────────────────────────────────────
 #   Single-instance lock
@@ -896,6 +897,26 @@ def get_temp_files() -> tuple[str, str]:
 
 _writing_engine = None
 
+def _background_sync():
+    """Silently fetches the latest preferences from the server."""
+    global PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT, WRITING_ENABLED
+    token = load_token()
+    if not token:
+        return
+    try:
+        r = requests.get(
+            f"{RAILWAY_URL}/auth/validate",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=3
+        )
+        if r.status_code == 200 and r.json().get('allowed'):
+            PREFERRED_LANGUAGE = r.json().get('preferred_language', PREFERRED_LANGUAGE)
+            IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', IS_TRANSLATION_ENABLED)
+            PLAN_PRODUCT = r.json().get('plan_product', PLAN_PRODUCT)
+            WRITING_ENABLED = r.json().get('writing_enabled', WRITING_ENABLED)
+    except Exception:
+        pass
+
 def _maybe_start_writing_engine():
     """Start the Writing Engine once, AFTER require_auth() has populated the
     entitlement globals (WRITING_ENABLED / PLAN_PRODUCT).
@@ -927,13 +948,19 @@ def voice_loop():
             require_auth()
             _maybe_start_writing_engine()   # after auth → WRITING_ENABLED is known
             while True:
-                # Re-auth if the token expired and silent refresh also failed
                 if need_reauth:
                     need_reauth = False
                     auth_success = False    # reset so login server loop runs
                     logger.info("Re-authenticating after session expiry.")
                     require_auth()
                     _maybe_start_writing_engine()   # entitlement may now be active
+                
+                # Periodically sync dictation settings from the webapp (every 10s)
+                # We do this check non-blockingly right before recording if it's been a while
+                global _last_sync_time
+                if time.time() - _last_sync_time > 10:
+                    _last_sync_time = time.time()
+                    threading.Thread(target=_background_sync, daemon=True).start()
 
                 raw_file, norm_file = get_temp_files()   # unique per recording
 

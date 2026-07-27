@@ -31,8 +31,8 @@ class WritingEngine:
         if self._running:
             return
         self._running = True
-        # Load preferences in background so startup isn't blocked
-        threading.Thread(target=self._load_preferences, daemon=True).start()
+        # Load preferences in background and keep syncing so webapp changes reflect instantly
+        threading.Thread(target=self._preference_polling_loop, daemon=True).start()
         self.mouse_listener = mouse.Listener(on_click=self._on_click)
         self.mouse_listener.start()
 
@@ -47,6 +47,11 @@ class WritingEngine:
                 f"Writing prefs loaded: auto_replace={self._auto_replace}, "
                 f"show_preview={self._show_preview}, lang={self._default_language}"
             )
+
+    def _preference_polling_loop(self):
+        while self._running:
+            self._load_preferences()
+            time.sleep(5)  # poll every 5 seconds for instant sync
 
     def refresh_preferences(self):
         """Called externally (e.g. after user saves settings) to reload prefs."""

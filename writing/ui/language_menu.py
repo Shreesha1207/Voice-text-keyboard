@@ -126,9 +126,9 @@ def show_language_menu(
             import webbrowser
             try:
                 from main import FRONTEND_URL
-                webbrowser.open(f"{FRONTEND_URL}/settings")
+                webbrowser.open(f"{FRONTEND_URL}/writing/settings")
             except Exception:
-                webbrowser.open("https://xvoicekeyboard.com/settings")
+                webbrowser.open("https://xvoicekeyboard.com/writing/settings")
 
     recent = load_recent_lang()
     if recent:
@@ -143,8 +143,9 @@ def show_language_menu(
     if custom_lang and custom_lang.lower() not in [l.lower() for l in langs_to_show]:
         langs_to_show.append(custom_lang)
 
+    active_lang = recent or custom_lang
     for lang in langs_to_show:
-        is_active = (recent and lang.lower() == recent.lower())
+        is_active = bool(active_lang and lang.lower() == active_lang.lower())
         label_text = f"{lang}  ✓" if is_active else lang
         row = _row(label_text)
         row.clicked.connect(lambda _=False, l=lang: select(l))
