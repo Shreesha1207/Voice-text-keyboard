@@ -79,9 +79,15 @@ def show_action_menu(
 
     for label, action_key in ACTIONS:
         row = _row(label)
-        row.clicked.connect(
-            lambda _=False, ak=action_key: (menu.close(), on_action(ak, None))
-        )
+        
+        def make_callback(ak):
+            def callback(_=False):
+                if ak != "translate":
+                    menu.close()
+                on_action(ak, None)
+            return callback
+            
+        row.clicked.connect(make_callback(action_key))
         menu.body.addWidget(row)
 
     menu.show_at(x, y + 35)

@@ -64,7 +64,7 @@ class OverlayManager:
             self._do_hide_button()
             x, y, selected_text, prev_clipboard = args
             from writing.ui.action_menu import show_action_menu
-            show_action_menu(
+            self.action_menu_ref = show_action_menu(
                 x, y,
                 lambda action, lang, st=selected_text, pc=prev_clipboard:
                     self.engine.trigger_action(action, lang, st, pc),
@@ -73,9 +73,18 @@ class OverlayManager:
             self._do_hide_button()
             x, y, selected_text, prev_clipboard = args
             from writing.ui.language_menu import show_language_menu
+            
+            def on_lang_select(lang):
+                if getattr(self, 'action_menu_ref', None):
+                    try:
+                        self.action_menu_ref.close()
+                    except Exception:
+                        pass
+                self.engine.trigger_action("translate", lang, selected_text, prev_clipboard)
+
             show_language_menu(
                 x, y,
-                lambda lang: self.engine.trigger_action("translate", lang, selected_text, prev_clipboard),
+                on_lang_select,
                 custom_lang=getattr(self.engine, "_default_language", None)
             )
         elif cmd == "show_toast":

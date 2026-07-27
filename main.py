@@ -273,62 +273,7 @@ def safe_notify(msg, title="Xvoice"):
         except Exception:
             pass
 
-# Common languages shown directly in the tray submenu
-_COMMON_LANGUAGES = [
-    ("English",            "en"),
-    ("Hindi",              "hi"),
-    ("Spanish",            "es"),
-    ("French",             "fr"),
-    ("German",             "de"),
-    ("Chinese (Mandarin)", "zh"),
-    ("Arabic",             "ar"),
-    ("Portuguese",         "pt"),
-    ("Japanese",           "ja"),
-    ("Korean",             "ko"),
-]
-
-def _set_language(lang_code):
-    """Return a callback that sets PREFERRED_LANGUAGE to lang_code."""
-    def _callback(icon, item):
-        global PREFERRED_LANGUAGE
-        PREFERRED_LANGUAGE = lang_code
-        token = load_token()
-        if token:
-            try:
-                requests.patch(
-                    f"{RAILWAY_URL}/auth/language",
-                    headers={"Authorization": f"Bearer {token}"},
-                    json={"preferred_language": lang_code},
-                    timeout=5
-                )
-            except Exception as e:
-                logger.warning(f"Failed to sync language to server: {e}")
-        display_name = next((name for name, code in _COMMON_LANGUAGES if code == lang_code), lang_code)
-        safe_notify(f"Language set to {display_name}", "Xvoice")
-        logger.info(f"Preferred language changed to: {lang_code}")
-    return _callback
-
-def _more_languages(icon, item):
-    """Open the Language & Translation section on the dashboard settings page."""
-    webbrowser.open(f"{FRONTEND_URL}/settings")
-
-def _build_language_menu():
-    """Build the language submenu dynamically so the checkmark always
-    reflects the current PREFERRED_LANGUAGE at render time."""
-    items = []
-    for name, code in _COMMON_LANGUAGES:
-        # Capture `code` in a default-arg closure so each lambda is independent
-        items.append(
-            pystray.MenuItem(
-                name,
-                _set_language(code),
-                checked=lambda item, c=code: PREFERRED_LANGUAGE == c,
-                radio=True,
-            )
-        )
-    items.append(pystray.Menu.SEPARATOR)
-    items.append(pystray.MenuItem("More languages…", _more_languages))
-    return pystray.Menu(*items)
+# Language logic removed to rely entirely on webapp sync.
 
 def start_tray():
     global tray_icon
@@ -353,7 +298,6 @@ def start_tray():
         ),
         pystray.MenuItem("Download Page",  _open_download),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Language", _build_language_menu()),
         pystray.MenuItem("Enable Translation", _toggle_translation, checked=lambda item: IS_TRANSLATION_ENABLED),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Help", help_menu),
