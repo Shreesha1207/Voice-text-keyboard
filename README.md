@@ -90,12 +90,37 @@ Python required.
 | Platform | Download | How to install |
 |---|---|---|
 | 🪟 Windows | `xvoice.exe` / `XVoiceSetup.exe` | Double-click to run |
-| 🍎 macOS (Apple Silicon) | `Xvoice-arm64.dmg` | Open the DMG → drag **Xvoice** into **Applications** → run **First Run.command** |
-| 🍎 macOS (Intel) | `Xvoice-x86_64.dmg` | Same as above |
+| 🍎 macOS (Apple Silicon) | **`Xvoice-arm64.pkg`** ← recommended | Double-click and click through — install, launch-at-login and first launch are all automatic |
+| 🍎 macOS (Intel) | **`Xvoice-x86_64.pkg`** ← recommended | Same as above |
+| 🍎 macOS (drag-install) | `Xvoice-<arch>.dmg` | Drag **Xvoice** into **Applications** → run **First Run.command** |
 | 🐧 Linux | `Xvoice-x86_64.AppImage` | `chmod +x Xvoice-x86_64.AppImage && ./Xvoice-x86_64.AppImage` |
 
 Not sure which Mac you have?  → About This Mac. "Apple M1/M2/M3/M4" is
-arm64, "Intel" is x86_64.
+**arm64**, "Intel" is **x86_64**. They are not interchangeable — PyInstaller
+freezes per-architecture, and the wrong one simply will not open.
+
+> ### ⚠️ Xvoice has no Dock icon on macOS
+>
+> It is a **menu-bar app** — the purple microphone at the **top-right of your
+> screen**, next to the clock. That is the same role the system tray plays on
+> Windows, and it is deliberate (`LSUIElement`).
+>
+> If you installed it and "nothing happened", it is almost certainly running
+> up there. Confirm with `pgrep -fl Xvoice`.
+>
+> macOS silently hides menu-bar icons when the bar runs out of room — common
+> on laptops with a notch — and offers no overflow chevron like Windows does.
+
+**Something not working?** Run the diagnostic:
+
+```bash
+python3 mac/preflight.py
+```
+
+It checks architecture match, quarantine, signature, `Info.plist`, every
+Python dependency and the permission state, and prints the exact fix for
+whatever failed. See [`MACOS_NOTES.md`](MACOS_NOTES.md) for the full
+breakdown — including one **known open issue** with the Qt overlay on macOS.
 
 ### macOS permissions
 
@@ -127,7 +152,7 @@ a freshly started process.
 | Platform | Build the app | Build the installer |
 |---|---|---|
 | 🪟 Windows | `build_exe.bat` → `dist\xvoice.exe` | Compile `installer.iss` with [Inno Setup](https://jrsoftware.org/isinfo.php) → `Output\XVoiceSetup.exe` |
-| 🍎 macOS | `./build_mac.sh` → `dist/Xvoice.app` | `./installer_mac.sh` → `dist/Xvoice-<version>-<arch>.dmg` |
+| 🍎 macOS | `./build_mac.sh` → `dist/Xvoice.app` | `./installer_mac_pkg.sh` → `.pkg` (wizard) or `./installer_mac.sh` → `.dmg` (drag) |
 | 🐧 Linux | `pyinstaller --noconfirm xvoice.spec` → `dist/xvoice` | See the `build-linux` job in `.github/workflows/build.yml` |
 
 All three share the same `xvoice.spec`. Pushing a `v*` tag builds and
@@ -217,11 +242,15 @@ Voice-text-keyboard/
 │
 ├── setup_mac.command       # macOS: run-from-source setup & launcher
 ├── build_mac.sh            # macOS: build dist/Xvoice.app
-├── installer_mac.sh        # macOS: build dist/Xvoice-<ver>-<arch>.dmg
+├── installer_mac.sh        # macOS: build the .dmg (drag-install)
+├── installer_mac_pkg.sh    # macOS: build the .pkg (wizard + auto-setup)
+├── MACOS_NOTES.md          # macOS gotchas, signing, and the open Qt issue
 ├── mac/
+│   ├── preflight.py                     # Diagnostic: why isn't it working?
 │   ├── make_icns.py                     # Generates the app icon
 │   ├── entitlements.plist               # Hardened-runtime entitlements
 │   ├── com.xvoicekeyboard.xvoice.plist  # LaunchAgent template (login start)
+│   ├── pkg-scripts/postinstall          # .pkg: quarantine + agent + launch
 │   ├── first-run.command                # Ships in the DMG: permissions + launch
 │   └── dmg-readme.txt                   # Ships in the DMG as "Read Me.txt"
 │
@@ -236,9 +265,11 @@ Voice-text-keyboard/
 |---|---|---|
 | `setup.bat` | `setup_mac.command` | Install deps, register at login, launch from source |
 | `build_exe.bat` | `build_mac.sh` | Freeze with PyInstaller |
-| `installer.iss` (Inno Setup) | `installer_mac.sh` (DMG) | Wrap the build into a distributable installer |
+| `installer.iss` (Inno Setup) | `installer_mac_pkg.sh` (`.pkg`) | Wizard-style installer that runs setup logic |
+| — | `installer_mac.sh` (`.dmg`) | Drag-to-Applications alternative |
 | `xvoice.exe` | `Xvoice.app` | The application |
-| `XVoiceSetup.exe` | `Xvoice-<ver>-<arch>.dmg` | What users download |
+| `XVoiceSetup.exe` | `Xvoice-<ver>-<arch>.pkg` | What users download |
+| Authenticode signing | Developer ID + **notarization** | What stops the "unknown publisher" warning |
 | `HKCU\...\Run` registry value | `~/Library/LaunchAgents/com.xvoicekeyboard.xvoice.plist` | Start at login |
 | System tray icon | Menu-bar icon (`LSUIElement`) | Background UI |
 | `%LOCALAPPDATA%\Xvoice` | `~/Library/Application Support/Xvoice` | Token / config storage |

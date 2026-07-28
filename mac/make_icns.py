@@ -86,6 +86,15 @@ def main() -> int:
                 [iconutil, "-c", "icns", iconset, "-o", out],
                 check=True,
             )
+            # iconutil can exit 0 without writing anything; catch that here
+            # rather than letting the spec silently fall back to no icon.
+            if not os.path.isfile(out):
+                print("iconutil exited 0 but produced no file; using Pillow.")
+                draw_icon(1024).save(
+                    out,
+                    format="ICNS",
+                    sizes=[(s, s) for s in (16, 32, 64, 128, 256, 512, 1024)],
+                )
         else:
             # Not on macOS — Pillow can still emit a valid multi-size .icns
             print("iconutil not found; writing .icns with Pillow instead.")

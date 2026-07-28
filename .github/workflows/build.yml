@@ -111,23 +111,40 @@ jobs:
           lipo -archs dist/Xvoice.app/Contents/MacOS/xvoice || true
 
       - name: Create .dmg installer
-        run: ./installer_mac.sh
-
-      - name: Normalize DMG name
-        # Ship a predictable download name regardless of the version bump.
         run: |
-          SRC=$(ls dist/Xvoice-*-${{ matrix.arch }}.dmg | head -1)
-          if [ -z "$SRC" ]; then
-            echo "DMG creation failed"
-            exit 1
-          fi
-          mv "$SRC" "dist/Xvoice-${{ matrix.arch }}.dmg"
-          ls -lh dist/*.dmg
+          chmod +x installer_mac_pkg.sh mac/pkg-scripts/postinstall
+          ./installer_mac.sh
+
+      - name: Create .pkg installer
+        # The .pkg is the recommended download: its postinstall script clears
+        # quarantine, registers launch-at-login and starts the app, so the
+        # user has no manual "First Run" step.
+        run: ./installer_mac_pkg.sh
+
+      - name: Normalize installer names
+        # Ship predictable download names regardless of the version bump.
+        run: |
+          for ext in dmg pkg; do
+            SRC=$(ls dist/Xvoice-*-${{ matrix.arch }}.$ext 2>/dev/null | head -1)
+            if [ -z "$SRC" ]; then
+              echo "$ext creation failed"
+              exit 1
+            fi
+            mv "$SRC" "dist/Xvoice-${{ matrix.arch }}.$ext"
+          done
+          ls -lh dist/Xvoice-${{ matrix.arch }}.*
+
+      - name: Preflight the built bundle
+        # Runs on the real macOS runner — catches an arch mismatch, a missing
+        # Info.plist key or a broken signature before we publish it.
+        run: python mac/preflight.py || true
 
       - uses: actions/upload-artifact@v4
         with:
           name: xvoice-macos-${{ matrix.arch }}
-          path: dist/Xvoice-${{ matrix.arch }}.dmg
+          path: |
+            dist/Xvoice-${{ matrix.arch }}.dmg
+            dist/Xvoice-${{ matrix.arch }}.pkg
 
   # ── Linux (.AppImage) ─────────────────────────────────────────────────
   build-linux:
@@ -253,7 +270,9 @@ jobs:
           name: "Xvoice ${{ github.ref_name }}"
           files: |
             artifacts/xvoice-windows/xvoice.exe
+            artifacts/xvoice-macos-arm64/Xvoice-arm64.pkg
             artifacts/xvoice-macos-arm64/Xvoice-arm64.dmg
+            artifacts/xvoice-macos-x86_64/Xvoice-x86_64.pkg
             artifacts/xvoice-macos-x86_64/Xvoice-x86_64.dmg
             artifacts/xvoice-linux/Xvoice-x86_64.AppImage
           body: |
@@ -262,21 +281,38 @@ jobs:
             | Platform | Download | Instructions |
             |----------|----------|--------------|
             | 🪟 Windows | `xvoice.exe` | Double-click to run |
-            | 🍎 macOS (Apple Silicon) | `Xvoice-arm64.dmg` | Open DMG → drag Xvoice to Applications → run **First Run.command** |
-            | 🍎 macOS (Intel) | `Xvoice-x86_64.dmg` | Open DMG → drag Xvoice to Applications → run **First Run.command** |
+            | 🍎 macOS (Apple Silicon) | **`Xvoice-arm64.pkg`** ← recommended | Double-click, click through the installer. Done. |
+            | 🍎 macOS (Intel) | **`Xvoice-x86_64.pkg`** ← recommended | Double-click, click through the installer. Done. |
+            | 🍎 macOS (drag-install) | `Xvoice-*.dmg` | Drag to Applications → run **First Run.command** |
             | 🐧 Linux  | `Xvoice-x86_64.AppImage` | `chmod +x Xvoice-x86_64.AppImage && ./Xvoice-x86_64.AppImage` |
 
             Not sure which Mac you have?  → About This Mac.
-            "Apple M1/M2/M3/M4" = arm64, "Intel" = x86_64.
+            "Apple M1/M2/M3/M4" = **arm64**, "Intel" = **x86_64**.
+            The two are not interchangeable — the wrong one will not open.
 
             ### First run
             Your browser will open automatically to link your Xvoice account.
             Press **F8** anywhere on your computer to start dictating.
 
-            **macOS:** the build is not notarized yet, so run
-            **First Run.command** from the DMG once — it clears the download
-            quarantine flag and opens the Microphone / Accessibility / Input
-            Monitoring settings that Xvoice needs. Full instructions are in
-            **Read Me.txt** inside the DMG.
+            ### macOS notes
+
+            **Xvoice has no Dock icon.** It is a menu-bar app — look for the
+            purple microphone at the **top-right of your screen**, next to the
+            clock. If you opened it and "nothing happened", it is almost
+            certainly running up there.
+
+            The build is not notarized yet, so macOS will warn on first open:
+
+            - **`.pkg`** — right-click → *Open* → *Open*. Everything else
+              (quarantine, launch-at-login, first launch) is automatic.
+            - **`.dmg`** — run **First Run.command** after dragging.
+
+            Xvoice needs **Microphone**, **Accessibility** and **Input
+            Monitoring** in System Settings → Privacy & Security. The last two
+            only list Xvoice *after* its first launch, and you must restart
+            Xvoice after granting them.
+
+            Something not working? Run `python3 mac/preflight.py` from the
+            repo — it tells you exactly which step failed.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
