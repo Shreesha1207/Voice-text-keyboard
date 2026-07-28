@@ -7,3 +7,15 @@ pystray
 Pillow
 PySide6
 pyinstaller
+# Imported at module scope by writing/clipboard.py and by main.py's
+# _paste_text() fallback, but never declared — nothing else pulls it in
+# transitively. A clean install without it imports fine until the Writing
+# engine loads, then dies on `import pyperclip`.
+pyperclip
+
+# macOS only — pynput and pystray reach the window server through the pyobjc
+# bridge. pip resolves them transitively, but pinning them here means
+# PyInstaller definitely sees them installed at build time.
+pyobjc-framework-Cocoa; sys_platform == "darwin"
+pyobjc-framework-Quartz; sys_platform == "darwin"
+pyobjc-framework-ApplicationServices; sys_platform == "darwin"

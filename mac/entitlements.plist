@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for Xvoice.app.
+
+  Only used when signing with a real Developer ID
+  (XVOICE_SIGN_IDENTITY=...); an ad-hoc build ignores the hardened runtime.
+  Notarization REQUIRES the hardened runtime, and the hardened runtime blocks
+  everything below unless it is explicitly allowed here.
+-->
+<plist version="1.0">
+<dict>
+    <!-- Record from the microphone (push-to-talk dictation). -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!-- osascript notifications + pasting into the frontmost app. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+
+    <!-- PyInstaller writes the interpreter and its extension modules into the
+         bundle unsigned/ad-hoc-signed; without this the hardened runtime
+         refuses to load them and the app dies at startup. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+
+    <!-- CPython and Qt both allocate executable memory at runtime. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>

@@ -1,0 +1,88 @@
+#!/bin/bash
+#
+#  Xvoice .pkg postinstall — the direct equivalent of Inno Setup's
+#  [Run] / [Registry] sections.
+#
+#  Runs as ROOT after the installer has copied Xvoice.app into /Applications,
+#  so everything that First Run.command asks the user to do by hand on the DMG
+#  happens automatically here instead.
+#
+#  Exit non-zero and the installer reports failure, so every step is
+#  best-effort: a failed nicety must not fail the install.
+#
+set -u
+
+APP="/Applications/Xvoice.app"
+LABEL="com.xvoicekeyboard.xvoice"
+LOG="/tmp/xvoice-postinstall.log"
+
+exec >>"$LOG" 2>&1
+echo "=== Xvoice postinstall $(date) ==="
+
+# The installer runs as root, but the LaunchAgent and the app itself belong to
+# the human who is actually logged in at the GUI.
+CONSOLE_USER="$(stat -f%Su /dev/console 2>/dev/null)"
+if [[ -z "$CONSOLE_USER" || "$CONSOLE_USER" == "root" ]]; then
+    echo "No console user; skipping per-user setup."
+    exit 0
+fi
+USER_HOME="$(dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+USER_UID="$(id -u "$CONSOLE_USER" 2>/dev/null)"
+echo "Console user: $CONSOLE_USER ($USER_UID) home=$USER_HOME"
+
+# ── 1. Quarantine ────────────────────────────────────────────────────────
+# Installer-delivered files are not normally quarantined, but the .pkg itself
+# may have been, and the flag can be inherited. Clearing it is harmless.
+xattr -dr com.apple.quarantine "$APP" 2>/dev/null && echo "Cleared quarantine."
+
+# ── 2. Launch at login ───────────────────────────────────────────────────
+if [[ -n "$USER_HOME" && -d "$USER_HOME" ]]; then
+    AGENT_DIR="$USER_HOME/Library/LaunchAgents"
+    AGENT="$AGENT_DIR/$LABEL.plist"
+    mkdir -p "$AGENT_DIR"
+    cat > "$AGENT" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$APP/Contents/MacOS/xvoice</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>
+PLIST
+    chown "$CONSOLE_USER" "$AGENT"
+    chmod 644 "$AGENT"
+    echo "Installed LaunchAgent at $AGENT"
+
+    # Load it into the user's GUI session, not root's.
+    launchctl bootout   "gui/$USER_UID/$LABEL" 2>/dev/null
+    launchctl bootstrap "gui/$USER_UID" "$AGENT" 2>/dev/null \
+        && echo "LaunchAgent bootstrapped." \
+        || echo "LaunchAgent will load at next login."
+fi
+
+# ── 3. Launch now ────────────────────────────────────────────────────────
+# `open` as the console user so the app inherits their GUI session — TCC
+# attributes the microphone / accessibility prompts to Xvoice correctly only
+# when it is launched this way, never as root.
+launchctl asuser "$USER_UID" sudo -u "$CONSOLE_USER" \
+    open -a "$APP" 2>/dev/null \
+    && echo "Launched Xvoice." \
+    || echo "Could not auto-launch; user can open it from Applications."
+
+echo "=== done ==="
+exit 0
