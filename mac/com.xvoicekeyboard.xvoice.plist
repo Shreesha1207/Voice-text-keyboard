@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent template — the macOS equivalent of the Windows
+  HKCU\...\CurrentVersion\Run entry that setup.bat / main.py's
+  setup_startup() create.
+
+  __PROGRAM_ARGUMENTS__ and __WORKING_DIRECTORY__ are replaced at install time
+  by setup_mac.command.  Installed to:
+      ~/Library/LaunchAgents/com.xvoicekeyboard.xvoice.plist
+
+  mac/first-run.command (which ships alone inside the DMG and cannot read this
+  file) writes an equivalent plist inline — keep the two in sync.
+
+  KeepAlive is deliberately false: main.py already has its own crash watchdog
+  and a single-instance socket lock, and "Quit Xvoice" from the menu bar must
+  actually quit rather than be resurrected by launchd.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.xvoicekeyboard.xvoice</string>
+
+    <key>ProgramArguments</key>
+    <array>
+__PROGRAM_ARGUMENTS__
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__WORKING_DIRECTORY__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <false/>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+
+    <key>StandardErrorPath</key>
+    <string>/dev/null</string>
+</dict>
+</plist>

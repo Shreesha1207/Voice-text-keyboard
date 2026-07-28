@@ -7,3 +7,10 @@ pystray
 Pillow
 PySide6
 pyinstaller
+
+# macOS only — pynput and pystray reach the window server through the pyobjc
+# bridge. pip resolves them transitively, but pinning them here means
+# PyInstaller definitely sees them installed at build time.
+pyobjc-framework-Cocoa; sys_platform == "darwin"
+pyobjc-framework-Quartz; sys_platform == "darwin"
+pyobjc-framework-ApplicationServices; sys_platform == "darwin"

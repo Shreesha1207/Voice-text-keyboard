@@ -56,16 +56,90 @@ OPENAI_API_KEY=sk-your-key-here
 
 ### 3. Run Setup
 
-Double-click **`setup.bat`** or run it from a terminal:
+**Windows** — double-click **`setup.bat`** or run it from a terminal:
 
 ```bat
 setup.bat
 ```
 
-This will:
-1. Install all Python dependencies via `pip`
-2. Add the app to your **Windows Startup folder** so it launches automatically on boot
+**macOS** — double-click **`setup_mac.command`** or run it from a terminal:
+
+```bash
+./setup_mac.command
+```
+
+**Linux** — run **`setup_mac_linux.sh`**:
+
+```bash
+./setup_mac_linux.sh
+```
+
+Each of these will:
+1. Install the system prerequisites (ffmpeg, portaudio) and Python dependencies
+2. Register the app to launch automatically at login
+   (Windows Startup folder / macOS LaunchAgent)
 3. Launch the app immediately in the background (no console window)
+
+---
+
+## 📦 Installing the packaged app
+
+Prebuilt downloads are published on the [Releases page](../../releases) — no
+Python required.
+
+| Platform | Download | How to install |
+|---|---|---|
+| 🪟 Windows | `xvoice.exe` / `XVoiceSetup.exe` | Double-click to run |
+| 🍎 macOS (Apple Silicon) | `Xvoice-arm64.dmg` | Open the DMG → drag **Xvoice** into **Applications** → run **First Run.command** |
+| 🍎 macOS (Intel) | `Xvoice-x86_64.dmg` | Same as above |
+| 🐧 Linux | `Xvoice-x86_64.AppImage` | `chmod +x Xvoice-x86_64.AppImage && ./Xvoice-x86_64.AppImage` |
+
+Not sure which Mac you have?  → About This Mac. "Apple M1/M2/M3/M4" is
+arm64, "Intel" is x86_64.
+
+### macOS permissions
+
+Xvoice is a menu-bar app (no Dock icon) and needs three permissions macOS
+gates behind Privacy & Security. **First Run.command** in the DMG opens all
+three panes for you:
+
+| Permission | Why | Where |
+|---|---|---|
+| **Microphone** | To hear you | Prompted automatically on first `F8` |
+| **Accessibility** | To type the transcribed text into other apps | Privacy & Security → Accessibility |
+| **Input Monitoring** | To notice `F8` while another app is in front | Privacy & Security → Input Monitoring |
+
+Xvoice only appears in the Accessibility / Input Monitoring lists **after**
+it has been launched once. After you switch either one on, restart Xvoice
+(menu-bar icon → *Refresh / Restart*) — macOS only hands a new permission to
+a freshly started process.
+
+> **"Xvoice is damaged and can't be opened"** — the build is not notarized
+> yet, so macOS quarantines it. `First Run.command` clears that, or run:
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/Xvoice.app
+> ```
+
+---
+
+## 🏗️ Building the installers yourself
+
+| Platform | Build the app | Build the installer |
+|---|---|---|
+| 🪟 Windows | `build_exe.bat` → `dist\xvoice.exe` | Compile `installer.iss` with [Inno Setup](https://jrsoftware.org/isinfo.php) → `Output\XVoiceSetup.exe` |
+| 🍎 macOS | `./build_mac.sh` → `dist/Xvoice.app` | `./installer_mac.sh` → `dist/Xvoice-<version>-<arch>.dmg` |
+| 🐧 Linux | `pyinstaller --noconfirm xvoice.spec` → `dist/xvoice` | See the `build-linux` job in `.github/workflows/build.yml` |
+
+All three share the same `xvoice.spec`. Pushing a `v*` tag builds and
+publishes every platform automatically via GitHub Actions.
+
+**Optional macOS signing** (removes the Gatekeeper warning entirely):
+
+```bash
+export XVOICE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+export XVOICE_NOTARY_PROFILE="xvoice-notary"   # see installer_mac.sh
+./build_mac.sh && ./installer_mac.sh
+```
 
 ---
 
@@ -130,13 +204,45 @@ The transcription API call includes a `prompt` that informs the model the speake
 
 ```
 Voice-text-keyboard/
-├── main.py           # Main app logic
-├── setup.bat         # One-click setup & launcher
-├── requirements.txt  # Python dependencies
-├── .env              # Your OpenAI API key (not committed)
-├── ffmpeg.exe        # FFmpeg binary (not committed)
-└── README.md         # This file
+├── main.py                 # Main app logic
+├── writing/                # Writing engine (Qt overlay, actions, backend client)
+├── backend/                # API service
+├── requirements.txt        # Python dependencies
+├── xvoice.spec             # Shared PyInstaller spec (Windows / macOS / Linux)
+│
+├── setup.bat               # Windows: run-from-source setup & launcher
+├── build_exe.bat           # Windows: build dist\xvoice.exe
+├── installer.iss           # Windows: Inno Setup script -> XVoiceSetup.exe
+├── ffmpeg.exe              # Windows FFmpeg binary
+│
+├── setup_mac.command       # macOS: run-from-source setup & launcher
+├── build_mac.sh            # macOS: build dist/Xvoice.app
+├── installer_mac.sh        # macOS: build dist/Xvoice-<ver>-<arch>.dmg
+├── mac/
+│   ├── make_icns.py                     # Generates the app icon
+│   ├── entitlements.plist               # Hardened-runtime entitlements
+│   ├── com.xvoicekeyboard.xvoice.plist  # LaunchAgent template (login start)
+│   ├── first-run.command                # Ships in the DMG: permissions + launch
+│   └── dmg-readme.txt                   # Ships in the DMG as "Read Me.txt"
+│
+├── setup_mac_linux.sh      # Linux (and bare-bones macOS) source setup
+├── .env                    # Your API key (not committed)
+└── README.md               # This file
 ```
+
+### Windows ↔ macOS equivalents
+
+| Windows | macOS | Purpose |
+|---|---|---|
+| `setup.bat` | `setup_mac.command` | Install deps, register at login, launch from source |
+| `build_exe.bat` | `build_mac.sh` | Freeze with PyInstaller |
+| `installer.iss` (Inno Setup) | `installer_mac.sh` (DMG) | Wrap the build into a distributable installer |
+| `xvoice.exe` | `Xvoice.app` | The application |
+| `XVoiceSetup.exe` | `Xvoice-<ver>-<arch>.dmg` | What users download |
+| `HKCU\...\Run` registry value | `~/Library/LaunchAgents/com.xvoicekeyboard.xvoice.plist` | Start at login |
+| System tray icon | Menu-bar icon (`LSUIElement`) | Background UI |
+| `%LOCALAPPDATA%\Xvoice` | `~/Library/Application Support/Xvoice` | Token / config storage |
+| `%LOCALAPPDATA%\Xvoice` | `~/Library/Logs/Xvoice` | Logs |
 
 ---
 

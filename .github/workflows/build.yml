@@ -68,8 +68,20 @@ jobs:
           path: dist/xvoice.exe
 
   # ── macOS (.dmg) ──────────────────────────────────────────────────────
+  # PyInstaller can only freeze for the arch it runs on (there are no
+  # universal2 wheels for PyAudio/PySide6), so we build one DMG per arch:
+  #   macos-14 -> Apple Silicon (M1/M2/M3/M4)
+  #   macos-13 -> Intel
   build-macos:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+          - runner: macos-13
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
@@ -80,24 +92,14 @@ jobs:
       - name: Install system deps
         run: brew install portaudio create-dmg
 
-      - name: Install Python dependencies
-        run: |
-          export LDFLAGS="-L/opt/homebrew/lib"
-          export CPPFLAGS="-I/opt/homebrew/include"
-          pip install pyaudio pynput webrtcvad-wheels python-dotenv requests pystray Pillow pyinstaller
-
-      - name: Fix webrtcvad metadata
-        run: |
-          SITE=$(python -c "import site; print(site.getsitepackages()[0])")
-          DIR="$SITE/webrtcvad-2.0.14.dist-info"
-          mkdir -p "$DIR"
-          printf 'Metadata-Version: 2.1\nName: webrtcvad\nVersion: 2.0.14\n' > "$DIR/METADATA"
-          echo "Created: $DIR/METADATA"
-          cat "$DIR/METADATA"
-
-
       - name: Build Xvoice.app
-        run: pyinstaller --noconfirm xvoice.spec
+        # build_mac.sh installs from requirements.txt, patches the webrtcvad
+        # metadata, generates the .icns, bundles ffmpeg and signs the bundle.
+        env:
+          PYTHON: python
+        run: |
+          chmod +x build_mac.sh installer_mac.sh mac/first-run.command
+          ./build_mac.sh
 
       - name: Verify app exists
         run: |
@@ -105,36 +107,27 @@ jobs:
             echo "Build failed: Xvoice.app not found"
             exit 1
           fi
+          echo "Bundle arch:"
+          lipo -archs dist/Xvoice.app/Contents/MacOS/xvoice || true
 
       - name: Create .dmg installer
-        run: |
-          create-dmg \
-            --volname "Xvoice" \
-            --window-pos 200 120 \
-            --window-size 660 400 \
-            --icon-size 128 \
-            --icon "Xvoice.app" 180 170 \
-            --hide-extension "Xvoice.app" \
-            --app-drop-link 480 170 \
-            "dist/Xvoice.dmg" \
-            "dist/Xvoice.app" \
-          || true
-          if [ ! -f "dist/Xvoice.dmg" ]; then
-            echo "create-dmg failed, falling back to hdiutil"
-            hdiutil create -volname "Xvoice" -srcfolder dist/Xvoice.app -ov -format UDZO dist/Xvoice.dmg
-          fi
+        run: ./installer_mac.sh
 
-      - name: Verify DMG exists
+      - name: Normalize DMG name
+        # Ship a predictable download name regardless of the version bump.
         run: |
-          if [ ! -f "dist/Xvoice.dmg" ]; then
+          SRC=$(ls dist/Xvoice-*-${{ matrix.arch }}.dmg | head -1)
+          if [ -z "$SRC" ]; then
             echo "DMG creation failed"
             exit 1
           fi
+          mv "$SRC" "dist/Xvoice-${{ matrix.arch }}.dmg"
+          ls -lh dist/*.dmg
 
       - uses: actions/upload-artifact@v4
         with:
-          name: xvoice-macos
-          path: dist/Xvoice.dmg
+          name: xvoice-macos-${{ matrix.arch }}
+          path: dist/Xvoice-${{ matrix.arch }}.dmg
 
   # ── Linux (.AppImage) ─────────────────────────────────────────────────
   build-linux:
@@ -260,7 +253,8 @@ jobs:
           name: "Xvoice ${{ github.ref_name }}"
           files: |
             artifacts/xvoice-windows/xvoice.exe
-            artifacts/xvoice-macos/Xvoice.dmg
+            artifacts/xvoice-macos-arm64/Xvoice-arm64.dmg
+            artifacts/xvoice-macos-x86_64/Xvoice-x86_64.dmg
             artifacts/xvoice-linux/Xvoice-x86_64.AppImage
           body: |
             ## Xvoice ${{ github.ref_name }}
@@ -268,11 +262,21 @@ jobs:
             | Platform | Download | Instructions |
             |----------|----------|--------------|
             | 🪟 Windows | `xvoice.exe` | Double-click to run |
-            | 🍎 macOS  | `Xvoice.dmg` | Open DMG → drag Xvoice to Applications |
+            | 🍎 macOS (Apple Silicon) | `Xvoice-arm64.dmg` | Open DMG → drag Xvoice to Applications → run **First Run.command** |
+            | 🍎 macOS (Intel) | `Xvoice-x86_64.dmg` | Open DMG → drag Xvoice to Applications → run **First Run.command** |
             | 🐧 Linux  | `Xvoice-x86_64.AppImage` | `chmod +x Xvoice-x86_64.AppImage && ./Xvoice-x86_64.AppImage` |
+
+            Not sure which Mac you have?  → About This Mac.
+            "Apple M1/M2/M3/M4" = arm64, "Intel" = x86_64.
 
             ### First run
             Your browser will open automatically to link your Xvoice account.
             Press **F8** anywhere on your computer to start dictating.
+
+            **macOS:** the build is not notarized yet, so run
+            **First Run.command** from the DMG once — it clears the download
+            quarantine flag and opens the Microphone / Accessibility / Input
+            Monitoring settings that Xvoice needs. Full instructions are in
+            **Read Me.txt** inside the DMG.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
