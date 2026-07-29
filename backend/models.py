@@ -80,13 +80,33 @@ class User(Base):
         return delta.days >= 14
 
     @property
-    def tier(self) -> str:
+    def subscription_is_active(self) -> bool:
+        """True while the user is paying, including the run-out after cancelling."""
         if self.subscription_status == SubscriptionStatus.PAID:
-            return "paid"
+            return True
         if self.subscription_status == SubscriptionStatus.CANCELED:
-            # If canceled but still in the active billing period, they remain "paid" tier
-            if self.current_period_end and self.current_period_end > datetime.utcnow():
-                return "paid"
+            # Cancelled but still inside the paid period — access continues.
+            return bool(self.current_period_end and self.current_period_end > datetime.utcnow())
+        return False
+
+    @property
+    def tier(self) -> str:
+        """Paid **dictation** access.
+
+        This gates the dictation premium features — custom hotkey, transcription
+        language, live translation — and the priority transcription queue.
+
+        It previously looked only at subscription_status, ignoring which product was
+        bought. Because any active subscription sets that field, buying Writing
+        alone unlocked the whole of Dictation Pro for free. The two products are
+        strictly siloed everywhere else (the web app grants across products only for
+        'platform'), so the entitlement must be product-aware here too.
+
+        plan_product defaults to 'dictation', so customers who subscribed before the
+        column existed keep their access.
+        """
+        if self.subscription_is_active and self.plan_product in ("dictation", "platform"):
+            return "paid"
         return "trial"
 
 
