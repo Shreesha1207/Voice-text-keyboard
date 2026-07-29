@@ -28,8 +28,9 @@ set "MAIN_PATH=%~dp0main.py"
 
 echo.
 echo [3/3] Launching the script now in the background...
-:: Kill any existing instance first to avoid duplicates
-taskkill /F /IM pythonw.exe >nul 2>&1
+:: Duplicate launches are handled by the single-instance socket lock in main.py.
+:: (A blanket "taskkill /F /IM pythonw.exe" used to run here — it killed every
+:: windowless Python process on the machine, not just Xvoice.)
 wscript "%VBS_FILE%"
 
 echo.

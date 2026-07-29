@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, date
-from sqlalchemy import String, DateTime, Boolean, Integer, Float, ForeignKey, Date, Text, Enum as SAEnum
+from sqlalchemy import String, DateTime, Boolean, Integer, Float, ForeignKey, Date, Text, UniqueConstraint, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 from database import Base
@@ -80,13 +80,33 @@ class User(Base):
         return delta.days >= 14
 
     @property
-    def tier(self) -> str:
+    def subscription_is_active(self) -> bool:
+        """True while the user is paying, including the run-out after cancelling."""
         if self.subscription_status == SubscriptionStatus.PAID:
-            return "paid"
+            return True
         if self.subscription_status == SubscriptionStatus.CANCELED:
-            # If canceled but still in the active billing period, they remain "paid" tier
-            if self.current_period_end and self.current_period_end > datetime.utcnow():
-                return "paid"
+            # Cancelled but still inside the paid period — access continues.
+            return bool(self.current_period_end and self.current_period_end > datetime.utcnow())
+        return False
+
+    @property
+    def tier(self) -> str:
+        """Paid **dictation** access.
+
+        This gates the dictation premium features — custom hotkey, transcription
+        language, live translation — and the priority transcription queue.
+
+        It previously looked only at subscription_status, ignoring which product was
+        bought. Because any active subscription sets that field, buying Writing
+        alone unlocked the whole of Dictation Pro for free. The two products are
+        strictly siloed everywhere else (the web app grants across products only for
+        'platform'), so the entitlement must be product-aware here too.
+
+        plan_product defaults to 'dictation', so customers who subscribed before the
+        column existed keep their access.
+        """
+        if self.subscription_is_active and self.plan_product in ("dictation", "platform"):
+            return "paid"
         return "trial"
 
 
@@ -137,6 +157,11 @@ class Achievement(Base):
 
 class UserAchievement(Base):
     __tablename__ = "user_achievements"
+    # Two concurrent transcriptions could both observe an achievement as un-unlocked
+    # and both insert it, giving the user duplicate badges.
+    __table_args__ = (
+        UniqueConstraint("user_id", "achievement_slug", name="uq_user_achievement"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
@@ -199,3 +224,25 @@ class WritingPreferences(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user: Mapped["User"] = relationship("User", back_populates="writing_preferences")
+
+
+class AuditLog(Base):
+    """Security and billing event trail.
+
+    Deliberately append-only and independent of the user row: a failed login for
+    an address that does not exist still needs recording, so user_id is nullable
+    and the raw email is kept alongside it.
+    """
+    __tablename__ = "audit_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Nullable: the event may concern an address with no matching account.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True
+    )
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    event: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

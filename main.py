@@ -28,6 +28,8 @@ FRONTEND_URL         = "https://xvoicekeyboard.com"           # Dictation dashbo
 WRITING_DASHBOARD_URL = "https://xvoicekeyboard.com/writing/dashboard"  # Writing dashboard
 LOCAL_PORT = 45678
 
+__version__ = "1.2.0"
+
 # --- Audio Settings ---
 HOTKEY = 'f8'
 FORMAT = pyaudio.paInt16
@@ -132,26 +134,51 @@ elif sys.platform == "darwin":
 else:
     LOG_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "Xvoice", "logs")
 
-os.makedirs(LOG_DIR, exist_ok=True)
+# This runs at import. If it raises — a locked-down profile, a redirected
+# LOCALAPPDATA, a read-only home — a windowed build dies here with no console and
+# no dialog, so the user double-clicks Xvoice and simply nothing happens. Fall back
+# to the temp directory instead; the app's job is dictation, not logging.
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+except OSError:
+    LOG_DIR = os.path.join(tempfile.gettempdir(), "Xvoice")
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+    except OSError:
+        LOG_DIR = tempfile.gettempdir()
+
 LOG_FILE = os.path.join(LOG_DIR, "xvoice.log")
 
-logging.basicConfig(
-    level=logging.INFO,          # INFO not DEBUG — suppresses internal HTTP noise
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
+_handlers = []
+try:
+    _handlers.append(
         RotatingFileHandler(
             LOG_FILE, encoding="utf-8",
             maxBytes=5 * 1024 * 1024,   # 5 MB per file
             backupCount=2               # keep xvoice.log + 2 rotated backups
-        ),
-        logging.StreamHandler(sys.stdout),
-    ]
+        )
+    )
+except OSError:
+    pass   # unwritable path — carry on without a log file rather than not starting
+
+# In a windowed build (console=False) PyInstaller sets sys.stdout to None, and
+# StreamHandler then falls back to sys.stderr — also None. Every log call would
+# fail internally and be silently swallowed. Only attach it if a console exists.
+if sys.stdout is not None:
+    _handlers.append(logging.StreamHandler(sys.stdout))
+
+logging.basicConfig(
+    # INFO not DEBUG — suppresses internal HTTP noise. Set XVOICE_LOG_LEVEL=DEBUG to
+    # diagnose a problem in the field without shipping a new build.
+    level=os.getenv("XVOICE_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=_handlers,
 )
 logger = logging.getLogger("xvoice")
 # Silence the noisy HTTP debug output from the requests/urllib3 libraries
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
-logger.info(f"Xvoice starting. Platform: {sys.platform}")
+logger.info(f"Xvoice v{__version__} starting. Platform: {sys.platform}")
 logger.info(f"Log file: {LOG_FILE}")
 
 # ─────────────────────────────────────────────
@@ -218,7 +245,7 @@ def _toggle_translation(icon, item):
                 safe_notify(f"Translation {'Enabled' if new_state else 'Disabled'}", "Xvoice")
         except Exception as e:
             logger.error(f"Failed to toggle translation: {e}")
-            safe_notify("Update Failed", "Could not reach server.")
+            safe_notify("Could not reach server.", "Update Failed")
 
 def _logout(icon, item):
     # Invalidate all tokens server-side (logs out browser dashboard too)
@@ -369,6 +396,12 @@ def save_token(access_token, refresh_token=None):
         data['refresh_token'] = refresh_token
     with open(CONFIG_FILE, 'w') as f:
         json.dump(data, f)
+    # These are credentials — the refresh token stays valid for 30 days. Default file
+    # permissions leave them readable by every other account on the machine.
+    try:
+        os.chmod(CONFIG_FILE, 0o600)
+    except OSError:
+        pass
 
 # ─────────────────────────────────────────────
 #   Magic Auth (one-time browser login)
@@ -399,6 +432,27 @@ class AuthHandler(BaseHTTPRequestHandler):
             else:
                 self.send_response(400)
                 self.end_headers()
+
+        elif self.path == '/logout':
+            # The web app posts here when the user logs out in the browser, but no
+            # such route existed — the handler fell through without sending any
+            # response at all. Logout still propagated eventually (the server bumps
+            # token_version, so the next API call 401s), but not immediately.
+            logger.info("Logout ping received from browser; clearing local token.")
+            try:
+                if os.path.exists(CONFIG_FILE):
+                    os.remove(CONFIG_FILE)
+            except OSError as e:
+                logger.warning(f"Could not remove config on logout ping: {e}")
+            self.send_response(200)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(b'{"status":"logged_out"}')
+
+        else:
+            # Always answer something. Falling through left the caller hanging.
+            self.send_response(404)
+            self.end_headers()
 
     def log_message(self, format, *args):
         pass          # silence server logs
@@ -442,6 +496,16 @@ def has_internet(timeout: float = 3.0) -> bool:
     Uses per-socket timeout — does NOT touch socket.setdefaulttimeout()
     so other sockets in the process are unaffected.
     """
+    # Try our own API over HTTPS first. Port 53 is blocked outbound on plenty of
+    # corporate and campus networks, which produced a false "no internet" and left
+    # the app stuck in its wait loop on exactly the machines it needed to work on.
+    # Reaching the backend is also the thing we actually care about.
+    try:
+        requests.head(f"{RAILWAY_URL.rsplit('/api', 1)[0]}/health", timeout=timeout)
+        return True
+    except Exception:
+        pass
+
     targets = [
         ("8.8.8.8",       53),   # Google DNS
         ("1.1.1.1",       53),   # Cloudflare DNS
@@ -464,7 +528,7 @@ def wait_for_internet(poll_interval: float = 5.0) -> None:
     if has_internet():
         return
     logger.info("No internet connection detected. Waiting…")
-    safe_notify("No internet", "Xvoice will connect as soon as the network is available.")
+    safe_notify("Xvoice will connect as soon as the network is available.", "No internet")
     while not has_internet():
         time.sleep(poll_interval)
     logger.info("Internet connection restored.")
@@ -513,7 +577,7 @@ def require_auth():
                     IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', False)
                     PLAN_PRODUCT = r.json().get('plan_product', 'dictation')
                     WRITING_ENABLED = r.json().get('writing_enabled', False)
-                    safe_notify("Session renewed", f"Xvoice is ready. Press {HOTKEY.upper()} to dictate.")
+                    safe_notify(f"Xvoice is ready. Press {HOTKEY.upper()} to dictate.", "Session renewed")
                     _sync_timezone()
                     return True
             except Exception:
@@ -558,7 +622,7 @@ def require_auth():
         except Exception:
             pass
 
-    safe_notify("Connected!", f"Xvoice is ready. Press {HOTKEY.upper()} to dictate.")
+    safe_notify(f"Xvoice is ready. Press {HOTKEY.upper()} to dictate.", "Connected!")
     _sync_timezone()
     return True
 
@@ -657,7 +721,9 @@ def on_press(key):
     global hotkey_pressed
     if key == KEY_OBJ:
         if not hotkey_pressed:
-            logger.info(f"Hotkey {HOTKEY.upper()} pressed")
+            # DEBUG, not INFO: at INFO this writes a timestamped record of every
+            # dictation to disk, which is more retained activity data than needed.
+            logger.debug(f"Hotkey {HOTKEY.upper()} pressed")
         hotkey_pressed = True
 
 def on_release(key):
@@ -808,6 +874,9 @@ def record_audio(output_filename):
         winsound.Beep(800, 100)
     stream.stop_stream()
     stream.close()
+    # Read the sample size before terminating: get_sample_size() was being called
+    # on an already-released PyAudio instance below.
+    sample_width = audio.get_sample_size(FORMAT)
     audio.terminate()
 
     if not frames:
@@ -815,18 +884,26 @@ def record_audio(output_filename):
 
     with wave.open(output_filename, 'wb') as wf:
         wf.setnchannels(CHANNELS)
-        wf.setsampwidth(audio.get_sample_size(FORMAT))
+        wf.setsampwidth(sample_width)
         wf.setframerate(RATE)
         wf.writeframes(b''.join(frames))
     return True
 
 def normalize_audio(input_file, output_file):
     try:
-        # Use the exe's own directory for ffmpeg when frozen, else PATH
+        # Use the bundle's own directory for ffmpeg when frozen, else PATH.
+        # The binary is only called ffmpeg.exe on Windows — this branch used that
+        # name unconditionally, so frozen macOS and Linux builds looked for a file
+        # that could never exist. normalize_audio then returned False and raw,
+        # un-normalized audio was sent, quietly degrading accuracy on exactly the
+        # platforms the .dmg and .AppImage target.
+        exe_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
         if getattr(sys, 'frozen', False):
-            ffmpeg = os.path.join(os.path.dirname(sys.executable), "ffmpeg.exe")
+            bundled = os.path.join(os.path.dirname(sys.executable), exe_name)
+            ffmpeg = bundled if os.path.isfile(bundled) else "ffmpeg"
         elif sys.platform == "win32":
-            ffmpeg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg.exe")
+            local = os.path.join(os.path.dirname(os.path.abspath(__file__)), exe_name)
+            ffmpeg = local if os.path.isfile(local) else "ffmpeg"
         else:
             ffmpeg = "ffmpeg"
         subprocess.run(
@@ -861,22 +938,28 @@ def transcribe_audio(audio_path):
             else:
                 logger.info("Transcription returned empty text.")
         elif r.status_code == 403:
-            safe_notify("Trial Expired", "Upgrade on the dashboard to continue.")
+            safe_notify("Upgrade on the dashboard to continue.", "Trial Expired")
         elif r.status_code == 401:
             logger.warning("401 received — attempting silent token refresh.")
             if try_silent_refresh():
                 # Got a fresh token; next F8 press will use it automatically
-                safe_notify("Session renewed", "Xvoice reconnected automatically.")
+                safe_notify("Xvoice reconnected automatically.", "Session renewed")
             else:
                 # Refresh token missing or expired — need full re-login
                 if os.path.exists(CONFIG_FILE):
                     os.remove(CONFIG_FILE)
                 need_reauth = True
-                safe_notify("Session expired", "Xvoice will reconnect — check your browser.")
+                safe_notify("Xvoice will reconnect — check your browser.", "Session expired")
         elif r.status_code == 429:
-            safe_notify("Server busy", "Try again in a moment.")
+            safe_notify("Try again in a moment.", "Server busy")
+        else:
+            # 5xx and anything else. Without this the user holds the hotkey, speaks,
+            # and absolutely nothing happens — no text, no beep, no message.
+            logger.error(f"Transcription failed: HTTP {r.status_code} — {r.text[:200]}")
+            safe_notify("Transcription failed — please try again.", "Xvoice")
     except Exception as e:
-        safe_notify("Connection error", str(e)[:80])
+        logger.error(f"Transcription request failed: {e}")
+        safe_notify(str(e)[:80], "Connection error")
 
 def get_temp_files() -> tuple[str, str]:
     """Return two unique writable temp file paths for a single recording.
@@ -990,7 +1073,7 @@ def voice_loop():
 
         except Exception as e:
             logger.error(f"voice_loop crashed: {e}. Restarting in 5 s…")
-            safe_notify("Xvoice restarting", "An error occurred — recovering automatically.")
+            safe_notify("An error occurred — recovering automatically.", "Xvoice restarting")
             time.sleep(5)
             # Reset flags so require_auth() runs fresh on restart
             auth_success = False

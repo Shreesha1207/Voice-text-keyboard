@@ -14,7 +14,10 @@ set -u
 
 APP="/Applications/Xvoice.app"
 LABEL="com.xvoicekeyboard.xvoice"
-LOG="/tmp/xvoice-postinstall.log"
+# Not /tmp: that is world-writable with a predictable name, so a local user could
+# pre-create it as a symlink and have this root-privileged script append to a file
+# of their choosing. /var/log is root-owned.
+LOG="/var/log/xvoice-postinstall.log"
 
 exec >>"$LOG" 2>&1
 echo "=== Xvoice postinstall $(date) ==="

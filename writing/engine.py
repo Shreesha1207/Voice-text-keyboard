@@ -11,7 +11,13 @@ logger = logging.getLogger(__name__)
 
 class WritingEngine:
     def __init__(self, get_token_func):
-        self.backend_url = "https://voicetotext-keyboard-production.up.railway.app/api"
+        # Single source of truth — this used to be a second hardcoded copy of the
+        # backend URL, so changing environments meant editing two files.
+        try:
+            from main import RAILWAY_URL as _BACKEND_URL
+        except Exception:
+            _BACKEND_URL = "https://voicetotext-keyboard-production.up.railway.app/api"
+        self.backend_url = _BACKEND_URL
         self.backend_client = BackendClient(self.backend_url, get_token_func)
         self.overlay_manager = OverlayManager(self)
         self.mouse_listener = None
@@ -31,6 +37,10 @@ class WritingEngine:
         if self._running:
             return
         self._running = True
+        # Surface a missing clipboard backend once, at startup, instead of failing
+        # silently on every selection.
+        from writing import clipboard
+        clipboard.check_available()
         # Load preferences in background and keep syncing so webapp changes reflect instantly
         threading.Thread(target=self._preference_polling_loop, daemon=True).start()
         self.mouse_listener = mouse.Listener(on_click=self._on_click)
@@ -48,10 +58,15 @@ class WritingEngine:
                 f"show_preview={self._show_preview}, lang={self._default_language}"
             )
 
+    # Polling every 5s was ~17,000 authenticated requests per user per day — a JWT
+    # verification and a DB round-trip each — to deliver three settings that change
+    # rarely. refresh_preferences() already covers the "user just saved" case.
+    PREFERENCE_POLL_SECONDS = 300
+
     def _preference_polling_loop(self):
         while self._running:
             self._load_preferences()
-            time.sleep(5)  # poll every 5 seconds for instant sync
+            time.sleep(self.PREFERENCE_POLL_SECONDS)
 
     def refresh_preferences(self):
         """Called externally (e.g. after user saves settings) to reload prefs."""
@@ -90,12 +105,14 @@ class WritingEngine:
 
         # Right-click also offers the button (the app's own menu still opens, but
         # the button click is caught by the global hook above, so it still works).
+        #
+        # It re-uses the selection captured by the preceding drag rather than copying
+        # again. A right-click does not imply the user selected anything, and the
+        # synthetic Ctrl+C fired here landed in whatever app had focus — in a terminal
+        # that is SIGINT, so right-clicking could kill a running process.
         if button == mouse.Button.right and pressed:
-            threading.Thread(
-                target=self._capture_selection_and_show,
-                args=(x, y),
-                daemon=True,
-            ).start()
+            if self._cached_selected_text and self._cached_selected_text.strip():
+                self.overlay_manager.show_xvoice_button(x, y)
 
     def _capture_selection_and_show(self, x, y):
         from writing import selection
@@ -158,6 +175,10 @@ class WritingEngine:
                 ))
 
         def on_error(msg: str):
+            # Release the cached selection — no need to hold the user's text in
+            # memory once the action has finished.
+            self._cached_selected_text = None
+            self._cached_prev_clipboard = None
             logger.error(f"Writing action '{action}' failed: {msg}")
             self.overlay_manager.cmd_queue.put(
                 ("show_toast", (f"✗ {msg[:60]}", False, 2500))

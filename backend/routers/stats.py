@@ -16,6 +16,10 @@ from schemas import (
 from dependencies import get_current_user
 from routers.achievements import check_and_grant_achievements
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/stats", tags=["Stats"])
 
 @router.post("/session/start", response_model=StartSessionResponse)
@@ -27,6 +31,35 @@ async def start_session(current_user: User = Depends(get_current_user), db: Asyn
     await db.refresh(session)
     return StartSessionResponse(session_id=session.id)
 
+# A dictation "session" is a run of activity with no long gap in it. The desktop
+# never calls /session/start, so without this every session-based metric — total
+# sessions, average words per session, peak WPM — stayed empty forever.
+SESSION_IDLE_GAP_MINUTES = 30
+
+
+async def _resolve_session(user: User, db: AsyncSession) -> Session:
+    """Return the user's current session, starting a new one after an idle gap.
+
+    Derived server-side so it works with the shipped client; no app release needed.
+    """
+    cutoff = datetime.utcnow() - timedelta(minutes=SESSION_IDLE_GAP_MINUTES)
+    stmt = (
+        select(Session)
+        .where(Session.user_id == user.id, Session.ended_at >= cutoff)
+        .order_by(desc(Session.ended_at))
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    session = result.scalar_one_or_none()
+    if session is not None:
+        return session
+
+    session = Session(user_id=user.id, ended_at=datetime.utcnow())
+    db.add(session)
+    await db.flush()   # assign the PK without ending the caller's transaction
+    return session
+
+
 async def internal_record_stats(user: User, db: AsyncSession, data: RecordWordsRequest) -> list[str]:
     """Internal helper to save word count and update user stats."""
     new_unlocks: list[str] = []
@@ -36,23 +69,28 @@ async def internal_record_stats(user: User, db: AsyncSession, data: RecordWordsR
     if wpm is None and data.audio_duration_seconds and data.audio_duration_seconds > 0:
         wpm = data.word_count / (data.audio_duration_seconds / 60.0)
 
-    # 2. Update the session if one is active
+    # 2. Attach to a session. If the caller supplied one, honour it; otherwise
+    #    derive it, so records are grouped instead of being orphaned with a NULL
+    #    session_id (which is what left the dashboard's session metrics blank).
+    session = None
     if data.session_id:
         stmt = select(Session).where(Session.id == data.session_id, Session.user_id == user.id)
         result = await db.execute(stmt)
         session = result.scalar_one_or_none()
-        if session:
-            session.word_count += data.word_count
-            session.char_count += data.char_count
-            if wpm:
-                if session.peak_wpm is None or wpm > session.peak_wpm:
-                     session.peak_wpm = wpm
-            session.ended_at = datetime.utcnow()
+    if session is None:
+        session = await _resolve_session(user, db)
+
+    session.word_count += data.word_count
+    session.char_count += data.char_count
+    if wpm:
+        if session.peak_wpm is None or wpm > session.peak_wpm:
+            session.peak_wpm = wpm
+    session.ended_at = datetime.utcnow()
 
     # 3. Add an explicit WordRecord (for history/achievements)
     record = WordRecord(
         user_id=user.id,
-        session_id=data.session_id,
+        session_id=session.id,
         word_count=data.word_count,
         char_count=data.char_count,
         wpm=wpm,
@@ -83,19 +121,12 @@ async def internal_record_stats(user: User, db: AsyncSession, data: RecordWordsR
     await db.commit()
     return new_unlocks
 
-@router.post("/record")
-async def record_words(
-    data: RecordWordsRequest, 
-    current_user: User = Depends(get_current_user), 
-    db: AsyncSession = Depends(get_db)
-):
-    """Save word count from a transcription event."""
-    new_unlocks = await internal_record_stats(current_user, db, data)
-    return {
-        "status": "ok",
-        "recorded_words": data.word_count,
-        "new_achievements": new_unlocks,
-    }
+# NOTE: POST /api/stats/record used to live here. It accepted a client-supplied
+# word count and added it straight to total_words, streaks, achievements and
+# leaderboard rank — i.e. every competitive number was forgeable with one request.
+# The web app's audit confirms it defines the call but marks it desktop-only, and
+# the desktop never used it either, so nothing was calling it. Transcription records
+# stats internally via internal_record_stats(), which remains the only writer.
 
 @router.get("/summary", response_model=StatsSummaryResponse)
 async def get_summary(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):

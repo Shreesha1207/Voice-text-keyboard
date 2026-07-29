@@ -9,8 +9,16 @@ from models import User
 from schemas import TranscribeResponse, RecordWordsRequest
 from routers.stats import internal_record_stats
 from queue_manager import queue_manager, Priority
+from rate_limit import limit_by_identity
 
 logger = logging.getLogger(__name__)
+
+# A person dictating continuously manages roughly one clip every few seconds, so
+# this is far above real use — it exists to bound cost if a token is abused.
+TRANSCRIBE_PER_MINUTE = 30
+
+# Upload ceiling. ~10 minutes of the 16 kHz mono WAV the client sends.
+MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
 router = APIRouter(prefix="/api/transcribe", tags=["Transcription"])
 
@@ -36,8 +44,23 @@ async def transcribe_audio(
     if current_user.tier != "paid":
         language = "en"
 
+    await limit_by_identity(
+        "transcribe", str(current_user.id), limit=TRANSCRIBE_PER_MINUTE, window_seconds=60
+    )
+
     audio_bytes = await file.read()
-    
+
+    # Reject oversized uploads before they reach disk or the transcription API.
+    if len(audio_bytes) > MAX_AUDIO_BYTES:
+        logger.warning(
+            f"User {current_user.id} sent {len(audio_bytes)} bytes, over the "
+            f"{MAX_AUDIO_BYTES} limit."
+        )
+        raise HTTPException(
+            status_code=413,
+            detail="Recording is too long. Please keep clips under about 10 minutes.",
+        )
+
     priority = Priority.PAID if current_user.tier == "paid" else Priority.TRIAL
     
     # 1. Enqueue
@@ -57,20 +80,36 @@ async def transcribe_audio(
         )
         
     job_id = enqueue_result["job_id"]
-    
-    # 2. Wait for result via pub/sub timeout (fallback safety)
-    result = await queue_manager.wait_for_result(job_id, timeout=45)
+
+    # 2. Wait for the result. The subscription was opened by enqueue_request before
+    #    the job became visible to a worker, so a fast result cannot be missed.
+    result = await queue_manager.wait_for_result(
+        job_id, timeout=45, pubsub=enqueue_result.get("pubsub")
+    )
     
     if "error" in result:
         logger.error(f"Transcription error for job {job_id} (user {current_user.id}): {result['error']}")
-        raise HTTPException(status_code=504, detail="Transcription timed out.")
+        if result["error"] == "timeout":
+            raise HTTPException(status_code=504, detail="Transcription timed out. Please try again.")
+        raise HTTPException(status_code=502, detail="Transcription failed. Please try again.")
 
     # Convert to response
     wait_time = result.get("queue_wait", 0)
-    wpm = None
-    processing_time = result.get("processing_time", 0)
-    if processing_time and processing_time > 0:
-        wpm = round((result["word_count"] / processing_time) * 60, 2)
+    audio_duration = result.get("audio_duration", 0)
+
+    # Nothing was said — a mis-tap of the hotkey, or speech too quiet for the voice
+    # activity filter. Return an empty result rather than tripping the word_count > 0
+    # validation rule (which surfaced to the user as an unhandled HTTP 500).
+    if result["word_count"] == 0:
+        return TranscribeResponse(
+            text="", word_count=0, char_count=0, wpm=None,
+            queue_wait_ms=int(wait_time * 1000)
+        )
+
+    # WPM must be derived from how long the user spoke, not from how long our server
+    # took to transcribe. internal_record_stats computes it from the audio duration
+    # when wpm is None, which also matches how /stats/summary reports peak WPM.
+    wpm = round(result["word_count"] / (audio_duration / 60.0), 2) if audio_duration else None
 
     # 3. Automatically record stats to database
     await internal_record_stats(
@@ -79,9 +118,9 @@ async def transcribe_audio(
         data=RecordWordsRequest(
             word_count=result["word_count"],
             char_count=result["char_count"],
-            wpm=wpm,
+            wpm=None,
             session_id=session_id,
-            audio_duration_seconds=result.get("audio_duration", 0)
+            audio_duration_seconds=audio_duration
         )
     )
 

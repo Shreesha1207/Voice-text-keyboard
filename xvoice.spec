@@ -8,9 +8,14 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules, coll
 
 block_cipher = None
 
-# Single source of truth for the version stamped into Xvoice.app and the DMG
-# name.  build_mac.sh / installer_mac.sh read it back out of this file.
-APP_VERSION = '1.1.0'
+# Version stamped into Xvoice.app and the DMG name. installer_mac.sh and
+# installer_mac_pkg.sh sed this literal back out, so keep the exact
+# `APP_VERSION = '...'` form.
+#
+# MUST match __version__ in main.py and MyAppVersion in installer.iss. The three
+# had drifted apart (1.1.0 / 1.2.0 / 1.0), so a log file could not be tied to a
+# build and Windows showed the wrong version in Add/Remove Programs.
+APP_VERSION = '1.2.0'
 
 # ── Data files & Binaries to bundle ──────────────────────────────────────
 datas = []

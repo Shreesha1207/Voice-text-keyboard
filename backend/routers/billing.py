@@ -1,7 +1,7 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Body
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from datetime import datetime, timedelta, timezone
 import os
 import stripe
@@ -14,6 +14,7 @@ from database import get_db
 from models import User, SubscriptionStatus
 from schemas import BillingStatusResponse
 from dependencies import get_current_user
+import audit
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,18 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     """
     Secure Webhook endpoint for Stripe handling subscriptions and payments.
     """
+    # NOTE: Stripe is configured to deliver to Lovable's payments-webhook, which
+    # verifies the signature and forwards a signed event to /lovable-sync. This
+    # handler is therefore believed to be unreachable. Rather than delete it blind
+    # — if some endpoint still points here, deleting would drop live billing events
+    # — it now announces itself loudly. If this line never appears in the logs, the
+    # handler is confirmed dead and can be removed.
+    logger.warning(
+        "Direct Stripe webhook invoked on Railway. Billing is expected to flow "
+        "Stripe -> Lovable payments-webhook -> /lovable-sync. If you see this, one "
+        "of those assumptions is wrong."
+    )
+
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
     webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
@@ -216,7 +229,68 @@ async def create_billing_portal(
         )
         return {"url": session.url}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        # Log the detail; don't hand raw Stripe internals to the client.
+        logger.error(f"Billing portal creation failed for user {current_user.id}: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail="Could not open the billing portal. Please try again."
+        )
+
+@router.post("/cancel")
+async def cancel_subscription(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancel at the end of the current billing period.
+
+    The web dashboard has always called POST /billing/cancel, but no such route
+    existed — the Cancel button returned 404 and customers could not self-serve a
+    cancellation.
+
+    This defers to Stripe rather than writing subscription state directly: Stripe
+    emits customer.subscription.updated, Lovable's payments-webhook upserts its own
+    row and forwards the signed event to /lovable-sync, and the status lands here
+    through the one authoritative path. Setting the flag locally as well would put
+    two writers on the same field again.
+    """
+    if not current_user.stripe_subscription_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No active subscription to cancel.",
+        )
+    if not stripe.api_key:
+        raise HTTPException(status_code=500, detail="STRIPE_SECRET_KEY not configured")
+
+    try:
+        subscription = stripe.Subscription.modify(
+            current_user.stripe_subscription_id,
+            cancel_at_period_end=True,
+        )
+    except Exception as e:
+        logger.error(f"Cancel failed for user {current_user.id}: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail="Could not cancel the subscription. Please try again.",
+        )
+
+    # Reflect it immediately so the UI updates without waiting for the webhook
+    # round-trip. The authoritative value still arrives via /lovable-sync.
+    current_user.cancel_at_period_end = True
+    await audit.record(
+        db, audit.SUBSCRIPTION_CHANGED, user_id=current_user.id, email=current_user.email,
+        detail=f"cancel_at_period_end=True via /billing/cancel "
+               f"(subscription={current_user.stripe_subscription_id})",
+    )
+    await db.commit()
+
+    period_end = getattr(subscription, "current_period_end", None)
+    return {
+        "status": "ok",
+        "cancel_at_period_end": True,
+        "current_period_end": period_end,
+        "detail": "Your subscription will remain active until the end of the current billing period.",
+    }
+
 
 @router.post("/lovable-sync")
 async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
@@ -249,17 +323,50 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
         
     email = data.get("email")
     status_str = data.get("status")
-    
+
     if not email:
         raise HTTPException(status_code=400, detail="Email is required")
 
+    # Reject anything that is not a live payment. Lovable's subscriptions table
+    # carries an environment column and the web app filters on it, but this payload
+    # historically had no such field — so a Stripe test-mode payment could flip a
+    # user to PAID here for real. Defence on the receiving side: do not rely on the
+    # sender to filter. Payloads with no environment are treated as live so existing
+    # senders keep working.
+    environment = (data.get("environment") or "live").strip().lower()
+    if environment != "live":
+        logger.warning(
+            f"lovable-sync: ignoring {environment!r} (non-live) event for {email!r} "
+            f"status={status_str!r}"
+        )
+        return {"status": "ignored", "reason": f"environment={environment} is not live"}
+
     # 3. Lookup User
-    stmt = select(User).where(User.email == email)
+    #    Case-insensitive: emails are stored as the user typed them, and Postgres
+    #    compares case-sensitively, so "User@Gmail.com" would otherwise miss a
+    #    stored "user@gmail.com".
+    stmt = select(User).where(func.lower(User.email) == email.strip().lower())
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
-    
+
     if not user:
-        return {"status": "ignored", "reason": f"User with email {email} not found in Railway DB"}
+        # This is the primary billing path — the customer has already paid. Returning
+        # 200 here made Lovable record the sync as delivered and never retry, leaving
+        # a paying customer silently on the trial plan. Fail loudly instead.
+        logger.error(
+            f"lovable-sync: no user matches email {email!r} — subscription NOT applied. "
+            f"status={status_str!r} plan_product={data.get('plan_product')!r}"
+        )
+        await audit.record(
+            db, audit.BILLING_SYNC_NO_USER, email=email, request=request,
+            detail=f"status={status_str} plan_product={data.get('plan_product')} "
+                   f"stripe_customer={data.get('stripe_customer_id')}",
+            commit=True,
+        )
+        raise HTTPException(
+            status_code=404,
+            detail="No account matches that email address; subscription was not applied.",
+        )
 
     # 4. Map and Update Status
     # active/trialing -> PAID, else map directly
@@ -272,9 +379,15 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
     elif status_str == "expired":
         user.subscription_status = SubscriptionStatus.EXPIRED
     
-    # Update other fields
-    user.stripe_customer_id = data.get("stripe_customer_id")
-    user.stripe_subscription_id = data.get("stripe_subscription_id")
+    # Update other fields.
+    # Only overwrite the Stripe identifiers when the payload actually carries them.
+    # A status-only sync (a cancellation or expiry, say) used to null them out, which
+    # broke that customer's billing portal AND stopped the Stripe webhook's
+    # customer-id fallback from ever matching them again.
+    if customer_id := data.get("stripe_customer_id"):
+        user.stripe_customer_id = customer_id
+    if subscription_id := data.get("stripe_subscription_id"):
+        user.stripe_subscription_id = subscription_id
     user.cancel_at_period_end = data.get("cancel_at_period_end", False)
 
     # Update plan_product if provided by the Lovable sync payload
@@ -293,5 +406,10 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
         except (ValueError, TypeError):
             pass
 
+    await audit.record(
+        db, audit.BILLING_SYNC_APPLIED, user_id=user.id, email=user.email, request=request,
+        detail=f"status={status_str} plan_product={user.plan_product} "
+               f"subscription_status={user.subscription_status.value}",
+    )
     await db.commit()
     return {"status": "success", "user_id": str(user.id)}
