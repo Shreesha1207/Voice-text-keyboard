@@ -80,9 +80,12 @@ async def transcribe_audio(
         )
         
     job_id = enqueue_result["job_id"]
-    
-    # 2. Wait for result via pub/sub timeout (fallback safety)
-    result = await queue_manager.wait_for_result(job_id, timeout=45)
+
+    # 2. Wait for the result. The subscription was opened by enqueue_request before
+    #    the job became visible to a worker, so a fast result cannot be missed.
+    result = await queue_manager.wait_for_result(
+        job_id, timeout=45, pubsub=enqueue_result.get("pubsub")
+    )
     
     if "error" in result:
         logger.error(f"Transcription error for job {job_id} (user {current_user.id}): {result['error']}")

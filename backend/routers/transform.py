@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+from sqlalchemy import select, func, update
 import logging
 import os
 from datetime import datetime, timezone
@@ -211,12 +211,25 @@ async def transform_text(
     # 3. Quota check + possible monthly reset
     _maybe_reset_quota(current_user)
     quota = _writing_quota_for(current_user)
-    if quota != UNLIMITED_QUOTA and current_user.writing_actions_this_month >= quota:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Monthly writing quota ({quota} actions) reached. "
-                   "Upgrade to Writing Pro for unlimited actions."
+    if quota != UNLIMITED_QUOTA:
+        # Claim the slot atomically. Reading the counter, checking it, then
+        # incrementing later left a window in which concurrent requests all saw the
+        # same value and every one of them passed — so the cap could be overrun by
+        # simply firing requests in parallel. The UPDATE ... WHERE does the check
+        # and the increment in a single statement; rowcount tells us if we won.
+        claim = await db.execute(
+            update(User)
+            .where(User.id == current_user.id, User.writing_actions_this_month < quota)
+            .values(writing_actions_this_month=User.writing_actions_this_month + 1)
         )
+        if claim.rowcount == 0:
+            await db.rollback()
+            raise HTTPException(
+                status_code=429,
+                detail=f"Monthly writing quota ({quota} actions) reached. "
+                       "Upgrade to Writing Pro for unlimited actions."
+            )
+        await db.refresh(current_user)
 
     # 4. Call OpenAI
     system_prompt = _build_system_prompt(request.action, request.target_language)
@@ -230,8 +243,8 @@ async def transform_text(
         )
         result_text = chat_res.choices[0].message.content.strip()
 
-        # 5. Increment quota counter + log
-        current_user.writing_actions_this_month += 1
+        # 5. The monthly counter was already claimed atomically above; only the
+        #    daily counter and the history row remain.
         from routers.writing_prefs import _bump_daily_counter
         _bump_daily_counter(current_user)
         await _log_action(db, current_user, request, result_text, success=True)

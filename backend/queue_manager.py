@@ -60,15 +60,39 @@ class QueueManager:
             "enqueued_at": asyncio.get_event_loop().time()
         }
         
+        # Subscribe BEFORE making the job visible to a worker. Once the rpush lands
+        # a worker can pop, process and publish immediately; anything published
+        # before this subscription exists is lost for good.
+        pubsub = await self.subscribe_for_result(job_id)
+
         await self.redis.rpush(queue_key, json.dumps(job_data))
+
+        return {"job_id": job_id, "filepath": filepath, "pubsub": pubsub}
         
-        return {"job_id": job_id, "filepath": filepath}
-        
-    async def wait_for_result(self, job_id: str, timeout: int = 30):
-        """Wait for the worker to publish the transcription back."""
+    async def subscribe_for_result(self, job_id: str):
+        """Register interest in a job's result BEFORE it is enqueued.
+
+        Redis pub/sub has no persistence: a message published while nobody is
+        subscribed is discarded permanently. Subscribing only after enqueueing left
+        a window in which a fast result — a rejected API key, a missing file, any
+        immediate failure — was published to nobody, so the request hung for the
+        full timeout and then returned a 504 the client silently ignored.
+        """
         pubsub = self.redis.pubsub()
         await pubsub.subscribe(f"{self.channel_prefix}{job_id}")
-        
+        return pubsub
+
+    async def wait_for_result(self, job_id: str, timeout: int = 30, pubsub=None):
+        """Wait for the worker to publish the transcription back.
+
+        Pass the pubsub returned by subscribe_for_result() to close the race. When
+        omitted it subscribes here, preserving the old behaviour for any caller
+        that has not been updated.
+        """
+        own_subscription = pubsub is None
+        if own_subscription:
+            pubsub = await self.subscribe_for_result(job_id)
+
         try:
              async def _listen():
                   async for message in pubsub.listen():
@@ -79,6 +103,10 @@ class QueueManager:
              logger.warning(f"Timeout waiting for transcription result for job {job_id}")
              return {"error": "timeout", "text": ""}
         finally:
-             await pubsub.unsubscribe()
+             try:
+                 await pubsub.unsubscribe()
+                 await pubsub.close()
+             except Exception:
+                 pass
              
 queue_manager = QueueManager()
