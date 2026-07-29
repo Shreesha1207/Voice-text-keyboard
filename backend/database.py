@@ -1,9 +1,12 @@
 import os
+import logging
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/xvoice")
 
@@ -54,4 +57,4 @@ async def init_db():
             await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_expires TIMESTAMP"))
         except Exception as e:
             # Log but don't block startup if migration fails (e.g. non-postgres DB during local testing)
-            print(f"Lazy migration notice: {e}")
+            logger.warning(f"Lazy migration notice: {e}")

@@ -381,10 +381,12 @@ async def update_hotkey(
         "up", "down", "left", "right"
     }
     
-    if hotkey not in allowed_keys and not (len(hotkey) == 1 and hotkey.isalnum()):
+    # Single letters/numbers are deliberately NOT allowed: the client binds the key
+    # globally, so a hotkey of "a" would start recording every time the user types A.
+    if hotkey not in allowed_keys:
         raise HTTPException(
-            status_code=400, 
-            detail=f"Invalid hotkey. Must be a single letter/number or a standard key like f8, ctrl, alt, shift."
+            status_code=400,
+            detail="Invalid hotkey. Use a function key (f2–f12) or a standard key like ctrl, alt, shift, space."
         )
     
     current_user.custom_hotkey = hotkey

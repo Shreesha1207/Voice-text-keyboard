@@ -26,8 +26,12 @@ app.add_middleware(
         # Lovable preview URLs
         "https://preview--happy-tiny-glance.lovable.app",
         "https://id-preview--29629b16-9d9f-4a0b-963b-efdedb055e28.lovable.app",
-        # Production — both /dashboard (dictation) and /writing/dashboard share this origin
+        # Production — both /dashboard (dictation) and /writing/dashboard share this origin.
+        # allow_credentials=True requires an exact origin match, so the www host has to
+        # be listed separately; without it every authenticated call from
+        # https://www.xvoicekeyboard.com fails CORS preflight.
         "https://xvoicekeyboard.com",
+        "https://www.xvoicekeyboard.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],

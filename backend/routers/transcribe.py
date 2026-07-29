@@ -63,14 +63,27 @@ async def transcribe_audio(
     
     if "error" in result:
         logger.error(f"Transcription error for job {job_id} (user {current_user.id}): {result['error']}")
-        raise HTTPException(status_code=504, detail="Transcription timed out.")
+        if result["error"] == "timeout":
+            raise HTTPException(status_code=504, detail="Transcription timed out. Please try again.")
+        raise HTTPException(status_code=502, detail="Transcription failed. Please try again.")
 
     # Convert to response
     wait_time = result.get("queue_wait", 0)
-    wpm = None
-    processing_time = result.get("processing_time", 0)
-    if processing_time and processing_time > 0:
-        wpm = round((result["word_count"] / processing_time) * 60, 2)
+    audio_duration = result.get("audio_duration", 0)
+
+    # Nothing was said — a mis-tap of the hotkey, or speech too quiet for the voice
+    # activity filter. Return an empty result rather than tripping the word_count > 0
+    # validation rule (which surfaced to the user as an unhandled HTTP 500).
+    if result["word_count"] == 0:
+        return TranscribeResponse(
+            text="", word_count=0, char_count=0, wpm=None,
+            queue_wait_ms=int(wait_time * 1000)
+        )
+
+    # WPM must be derived from how long the user spoke, not from how long our server
+    # took to transcribe. internal_record_stats computes it from the audio duration
+    # when wpm is None, which also matches how /stats/summary reports peak WPM.
+    wpm = round(result["word_count"] / (audio_duration / 60.0), 2) if audio_duration else None
 
     # 3. Automatically record stats to database
     await internal_record_stats(
@@ -79,9 +92,9 @@ async def transcribe_audio(
         data=RecordWordsRequest(
             word_count=result["word_count"],
             char_count=result["char_count"],
-            wpm=wpm,
+            wpm=None,
             session_id=session_id,
-            audio_duration_seconds=result.get("audio_duration", 0)
+            audio_duration_seconds=audio_duration
         )
     )
 

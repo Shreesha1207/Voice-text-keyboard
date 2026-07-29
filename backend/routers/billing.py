@@ -1,7 +1,7 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Request, Body
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from datetime import datetime, timedelta, timezone
 import os
 import stripe
@@ -216,7 +216,12 @@ async def create_billing_portal(
         )
         return {"url": session.url}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        # Log the detail; don't hand raw Stripe internals to the client.
+        logger.error(f"Billing portal creation failed for user {current_user.id}: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail="Could not open the billing portal. Please try again."
+        )
 
 @router.post("/lovable-sync")
 async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
@@ -254,12 +259,25 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Email is required")
 
     # 3. Lookup User
-    stmt = select(User).where(User.email == email)
+    #    Case-insensitive: emails are stored as the user typed them, and Postgres
+    #    compares case-sensitively, so "User@Gmail.com" would otherwise miss a
+    #    stored "user@gmail.com".
+    stmt = select(User).where(func.lower(User.email) == email.strip().lower())
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
-    
+
     if not user:
-        return {"status": "ignored", "reason": f"User with email {email} not found in Railway DB"}
+        # This is the primary billing path — the customer has already paid. Returning
+        # 200 here made Lovable record the sync as delivered and never retry, leaving
+        # a paying customer silently on the trial plan. Fail loudly instead.
+        logger.error(
+            f"lovable-sync: no user matches email {email!r} — subscription NOT applied. "
+            f"status={status_str!r} plan_product={data.get('plan_product')!r}"
+        )
+        raise HTTPException(
+            status_code=404,
+            detail="No account matches that email address; subscription was not applied.",
+        )
 
     # 4. Map and Update Status
     # active/trialing -> PAID, else map directly
@@ -272,9 +290,15 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
     elif status_str == "expired":
         user.subscription_status = SubscriptionStatus.EXPIRED
     
-    # Update other fields
-    user.stripe_customer_id = data.get("stripe_customer_id")
-    user.stripe_subscription_id = data.get("stripe_subscription_id")
+    # Update other fields.
+    # Only overwrite the Stripe identifiers when the payload actually carries them.
+    # A status-only sync (a cancellation or expiry, say) used to null them out, which
+    # broke that customer's billing portal AND stopped the Stripe webhook's
+    # customer-id fallback from ever matching them again.
+    if customer_id := data.get("stripe_customer_id"):
+        user.stripe_customer_id = customer_id
+    if subscription_id := data.get("stripe_subscription_id"):
+        user.stripe_subscription_id = subscription_id
     user.cancel_at_period_end = data.get("cancel_at_period_end", False)
 
     # Update plan_product if provided by the Lovable sync payload

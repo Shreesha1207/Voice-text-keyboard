@@ -28,6 +28,8 @@ FRONTEND_URL         = "https://xvoicekeyboard.com"           # Dictation dashbo
 WRITING_DASHBOARD_URL = "https://xvoicekeyboard.com/writing/dashboard"  # Writing dashboard
 LOCAL_PORT = 45678
 
+__version__ = "1.2.0"
+
 # --- Audio Settings ---
 HOTKEY = 'f8'
 FORMAT = pyaudio.paInt16
@@ -135,23 +137,32 @@ else:
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "xvoice.log")
 
+_handlers = [
+    RotatingFileHandler(
+        LOG_FILE, encoding="utf-8",
+        maxBytes=5 * 1024 * 1024,   # 5 MB per file
+        backupCount=2               # keep xvoice.log + 2 rotated backups
+    )
+]
+
+# In a windowed build (console=False) PyInstaller sets sys.stdout to None, and
+# StreamHandler then falls back to sys.stderr — also None. Every log call would
+# fail internally and be silently swallowed. Only attach it if a console exists.
+if sys.stdout is not None:
+    _handlers.append(logging.StreamHandler(sys.stdout))
+
 logging.basicConfig(
-    level=logging.INFO,          # INFO not DEBUG — suppresses internal HTTP noise
+    # INFO not DEBUG — suppresses internal HTTP noise. Set XVOICE_LOG_LEVEL=DEBUG to
+    # diagnose a problem in the field without shipping a new build.
+    level=os.getenv("XVOICE_LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        RotatingFileHandler(
-            LOG_FILE, encoding="utf-8",
-            maxBytes=5 * 1024 * 1024,   # 5 MB per file
-            backupCount=2               # keep xvoice.log + 2 rotated backups
-        ),
-        logging.StreamHandler(sys.stdout),
-    ]
+    handlers=_handlers,
 )
 logger = logging.getLogger("xvoice")
 # Silence the noisy HTTP debug output from the requests/urllib3 libraries
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
-logger.info(f"Xvoice starting. Platform: {sys.platform}")
+logger.info(f"Xvoice v{__version__} starting. Platform: {sys.platform}")
 logger.info(f"Log file: {LOG_FILE}")
 
 # ─────────────────────────────────────────────
@@ -369,6 +380,12 @@ def save_token(access_token, refresh_token=None):
         data['refresh_token'] = refresh_token
     with open(CONFIG_FILE, 'w') as f:
         json.dump(data, f)
+    # These are credentials — the refresh token stays valid for 30 days. Default file
+    # permissions leave them readable by every other account on the machine.
+    try:
+        os.chmod(CONFIG_FILE, 0o600)
+    except OSError:
+        pass
 
 # ─────────────────────────────────────────────
 #   Magic Auth (one-time browser login)
@@ -657,7 +674,9 @@ def on_press(key):
     global hotkey_pressed
     if key == KEY_OBJ:
         if not hotkey_pressed:
-            logger.info(f"Hotkey {HOTKEY.upper()} pressed")
+            # DEBUG, not INFO: at INFO this writes a timestamped record of every
+            # dictation to disk, which is more retained activity data than needed.
+            logger.debug(f"Hotkey {HOTKEY.upper()} pressed")
         hotkey_pressed = True
 
 def on_release(key):
@@ -875,7 +894,14 @@ def transcribe_audio(audio_path):
                 safe_notify("Session expired", "Xvoice will reconnect — check your browser.")
         elif r.status_code == 429:
             safe_notify("Server busy", "Try again in a moment.")
+        else:
+            # 5xx and anything else. Without this the user holds the hotkey, speaks,
+            # and absolutely nothing happens — no text, no beep, no message.
+            # NB: safe_notify(msg, title) — message first.
+            logger.error(f"Transcription failed: HTTP {r.status_code} — {r.text[:200]}")
+            safe_notify("Transcription failed — please try again.", "Xvoice")
     except Exception as e:
+        logger.error(f"Transcription request failed: {e}")
         safe_notify("Connection error", str(e)[:80])
 
 def get_temp_files() -> tuple[str, str]:

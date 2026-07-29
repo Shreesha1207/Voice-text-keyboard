@@ -14,9 +14,13 @@ EMAIL_WEBHOOK_SECRET = os.getenv("EMAIL_WEBHOOK_SECRET", "")
 def _call_edge_function(payload: dict) -> bool:
     """POST to the Supabase send-transactional-email edge function."""
     if not EMAIL_WEBHOOK_SECRET:
-        logger.warning("EMAIL_WEBHOOK_SECRET not set — logging email instead of sending.")
-        logger.info(f"[DEBUG EMAIL] payload={payload}")
-        return True
+        # Never log the payload: for a reset email it carries a live password-reset
+        # link. Report failure rather than pretending the mail was delivered.
+        logger.error(
+            "EMAIL_WEBHOOK_SECRET not set — no '%s' email was sent.",
+            payload.get("type"),
+        )
+        return False
 
     try:
         response = httpx.post(

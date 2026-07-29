@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 async def process_transcription(job: dict) -> dict:
     start_t = time.time()
     filepath = job.get("filepath")
-    
+    failed = False
+
     # Mocking openai logic if no key is provided
     if os.getenv("ENVIRONMENT") == "development" and not os.getenv("OPENAI_API_KEY"):
          await asyncio.sleep(1) # simulate network
@@ -54,7 +55,10 @@ async def process_transcription(job: dict) -> dict:
                     logger.info(f"Step 1: Transcribing with params: { {k:v for k,v in trans_params.items() if k != 'file'} }")
                     trans_res = await client.audio.transcriptions.create(**trans_params)
                     source_text = trans_res.text.strip()
-                    logger.info(f"Step 1 Result: '{source_text}'")
+                    # Transcribed speech is user content — never log it at INFO, where it
+                    # would be shipped to the platform log store on every dictation.
+                    logger.info(f"Step 1 complete: {len(source_text)} chars")
+                    logger.debug(f"Step 1 Result: '{source_text}'")
 
                     # Step 2: Optional Translation
                     if should_translate:
@@ -77,13 +81,18 @@ async def process_transcription(job: dict) -> dict:
                              ]
                          )
                          text = chat_res.choices[0].message.content.strip()
-                         logger.info(f"Step 2 Result: '{text}'")
+                         logger.info(f"Step 2 complete: {len(text)} chars")
+                         logger.debug(f"Step 2 Result: '{text}'")
                     else:
                          text = source_text
 
           except Exception as e:
               logger.exception(f"Transcription process error for {filepath}")
-              text = f"Error: {e}"
+              # Do NOT put the exception text in `text`: the desktop client types
+              # that value straight into whatever window the user has focused, and
+              # it would also be counted toward their word stats.
+              text = ""
+              failed = True
 
     # Generate metrics
     words = len(text.split())
@@ -107,13 +116,18 @@ async def process_transcription(job: dict) -> dict:
     if os.path.exists(filepath):
          os.remove(filepath)
          
-    return {
+    result = {
          "text": text,
          "word_count": words,
          "char_count": chars,
          "audio_duration": audio_duration,
          "processing_time": duration
     }
+    if failed:
+         # Signals the API layer to return an error status instead of a 200 with
+         # empty/garbage text.
+         result["error"] = "transcription_failed"
+    return result
 
 async def worker_loop():
     logger.info("Started background transcription worker.")
@@ -198,6 +212,24 @@ async def trial_cron_loop():
         # Run check every hour
         await asyncio.sleep(3600)
             
+# asyncio only holds a weak reference to running tasks, so a task with no other
+# reference can be garbage collected mid-execution. Keep handles until they finish.
+_background_tasks: set[asyncio.Task] = set()
+
+# One sequential worker meant one transcription at a time for the entire service.
+# Each worker spends nearly all its time awaiting the OpenAI round-trip, and the
+# Redis LPOP that feeds them is atomic, so running several is safe.
+WORKER_CONCURRENCY = int(os.getenv("WORKER_CONCURRENCY", "5"))
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 def start_worker():
-    asyncio.create_task(worker_loop())
-    asyncio.create_task(trial_cron_loop())
+    for _ in range(WORKER_CONCURRENCY):
+        _spawn(worker_loop())
+    _spawn(trial_cron_loop())
+    logger.info(f"Started {WORKER_CONCURRENCY} transcription worker(s).")
