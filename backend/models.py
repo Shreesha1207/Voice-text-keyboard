@@ -199,3 +199,25 @@ class WritingPreferences(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user: Mapped["User"] = relationship("User", back_populates="writing_preferences")
+
+
+class AuditLog(Base):
+    """Security and billing event trail.
+
+    Deliberately append-only and independent of the user row: a failed login for
+    an address that does not exist still needs recording, so user_id is nullable
+    and the raw email is kept alongside it.
+    """
+    __tablename__ = "audit_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Nullable: the event may concern an address with no matching account.
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True
+    )
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    event: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)

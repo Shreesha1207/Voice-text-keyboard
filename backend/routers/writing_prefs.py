@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import get_current_user
+from rate_limit import limit_by_identity
 from models import User, WritingAction, WritingPreferences, SubscriptionStatus
 from schemas import (
     WritingPreferencesOut,
@@ -248,6 +249,11 @@ async def writing_rewrite(
     db: AsyncSession = Depends(get_db),
 ):
     """AI rewrite — core Writing Engine endpoint. Enforces 50/day cap for trial users."""
+    # Same short-window limit as /text/transform: the daily cap bounds total volume,
+    # this bounds the rate at which it can be spent.
+    await limit_by_identity(
+        "writing_action", str(current_user.id), limit=20, window_seconds=60
+    )
     _require_writing_access(current_user)
     _enforce_daily_cap(current_user)
 

@@ -14,6 +14,7 @@ from database import get_db
 from models import User, SubscriptionStatus
 from schemas import BillingStatusResponse
 from dependencies import get_current_user
+import audit
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +275,12 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
             f"lovable-sync: no user matches email {email!r} — subscription NOT applied. "
             f"status={status_str!r} plan_product={data.get('plan_product')!r}"
         )
+        await audit.record(
+            db, audit.BILLING_SYNC_NO_USER, email=email, request=request,
+            detail=f"status={status_str} plan_product={data.get('plan_product')} "
+                   f"stripe_customer={data.get('stripe_customer_id')}",
+            commit=True,
+        )
         raise HTTPException(
             status_code=404,
             detail="No account matches that email address; subscription was not applied.",
@@ -317,5 +324,10 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
         except (ValueError, TypeError):
             pass
 
+    await audit.record(
+        db, audit.BILLING_SYNC_APPLIED, user_id=user.id, email=user.email, request=request,
+        detail=f"status={status_str} plan_product={user.plan_product} "
+               f"subscription_status={user.subscription_status.value}",
+    )
     await db.commit()
     return {"status": "success", "user_id": str(user.id)}

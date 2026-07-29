@@ -10,6 +10,7 @@ from dependencies import get_current_user
 from database import get_db
 from models import User, WritingAction, SubscriptionStatus
 from schemas import WritingValidateResponse, WritingActionHistoryEntry, WritingStatsResponse
+from rate_limit import limit_by_identity
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
@@ -180,6 +181,13 @@ async def transform_text(
             detail=f"Unknown action '{request.action}'. "
                    f"Allowed: {sorted(ALLOWED_ACTIONS)}"
         )
+
+    # 1a. Rate limit. The monthly quota counts actions but says nothing about how
+    #     fast they can be spent, so a loop could burn a month's quota — and the
+    #     matching OpenAI spend — in seconds.
+    await limit_by_identity(
+        "writing_action", str(current_user.id), limit=20, window_seconds=60
+    )
 
     # 1b. Size limit — mirrors /api/writing/rewrite.
     if len(request.text) > MAX_TEXT_CHARS:

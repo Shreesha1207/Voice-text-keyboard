@@ -77,5 +77,62 @@ def read_root():
     return {"status": "ok", "app": "xvoice backend APIs"}
 
 @app.get("/health")
-def health_check():
-    return {"status": "healthy", "service": "xvoice"}
+async def health_check():
+    """Real dependency check.
+
+    This used to return {"status": "healthy"} unconditionally, which meant uptime
+    monitors stayed green while Postgres was unreachable and every request was
+    failing. Returns 503 when something the API actually needs is down, so the
+    monitor fires before the users do.
+    """
+    from fastapi.responses import JSONResponse
+    from sqlalchemy import text as sql_text
+    import time as _time
+
+    checks: dict[str, str] = {}
+    healthy = True
+
+    # Database
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(sql_text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception as e:
+        checks["database"] = f"error: {type(e).__name__}"
+        healthy = False
+
+    # Redis (the transcription queue lives here)
+    try:
+        from queue_manager import queue_manager
+        await queue_manager.redis.ping()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"error: {type(e).__name__}"
+        healthy = False
+
+    # Transcription worker — it stamps a heartbeat each loop. A stale stamp means
+    # the workers died while the web process kept serving, which is invisible
+    # otherwise: requests just queue up and time out.
+    try:
+        from queue_manager import queue_manager
+        beat = await queue_manager.redis.get("worker:heartbeat")
+        if beat is None:
+            checks["worker"] = "no heartbeat yet"
+        else:
+            age = _time.time() - float(beat)
+            if age > 120:
+                checks["worker"] = f"stale ({int(age)}s)"
+                healthy = False
+            else:
+                checks["worker"] = "ok"
+    except Exception as e:
+        checks["worker"] = f"error: {type(e).__name__}"
+
+    return JSONResponse(
+        status_code=200 if healthy else 503,
+        content={
+            "status": "healthy" if healthy else "degraded",
+            "service": "xvoice",
+            "checks": checks,
+        },
+    )

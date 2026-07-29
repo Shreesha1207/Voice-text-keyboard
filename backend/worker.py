@@ -155,7 +155,9 @@ async def worker_loop():
                 # Publish result back
                 await redis_client.publish(f"transcribe_result:{job_id}", json.dumps(result))
             else:
-                # Nothing in queues
+                # Nothing in queues. Stamp a heartbeat so /health can tell the
+                # difference between "idle" and "the workers are dead".
+                await redis_client.set("worker:heartbeat", str(time.time()), ex=300)
                 await asyncio.sleep(0.1)
                 
         except Exception as e:

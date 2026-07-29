@@ -9,8 +9,16 @@ from models import User
 from schemas import TranscribeResponse, RecordWordsRequest
 from routers.stats import internal_record_stats
 from queue_manager import queue_manager, Priority
+from rate_limit import limit_by_identity
 
 logger = logging.getLogger(__name__)
+
+# A person dictating continuously manages roughly one clip every few seconds, so
+# this is far above real use — it exists to bound cost if a token is abused.
+TRANSCRIBE_PER_MINUTE = 30
+
+# Upload ceiling. ~10 minutes of the 16 kHz mono WAV the client sends.
+MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
 router = APIRouter(prefix="/api/transcribe", tags=["Transcription"])
 
@@ -36,8 +44,23 @@ async def transcribe_audio(
     if current_user.tier != "paid":
         language = "en"
 
+    await limit_by_identity(
+        "transcribe", str(current_user.id), limit=TRANSCRIBE_PER_MINUTE, window_seconds=60
+    )
+
     audio_bytes = await file.read()
-    
+
+    # Reject oversized uploads before they reach disk or the transcription API.
+    if len(audio_bytes) > MAX_AUDIO_BYTES:
+        logger.warning(
+            f"User {current_user.id} sent {len(audio_bytes)} bytes, over the "
+            f"{MAX_AUDIO_BYTES} limit."
+        )
+        raise HTTPException(
+            status_code=413,
+            detail="Recording is too long. Please keep clips under about 10 minutes.",
+        )
+
     priority = Priority.PAID if current_user.tier == "paid" else Priority.TRIAL
     
     # 1. Enqueue
