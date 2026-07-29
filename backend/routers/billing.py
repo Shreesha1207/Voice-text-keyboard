@@ -89,6 +89,18 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     """
     Secure Webhook endpoint for Stripe handling subscriptions and payments.
     """
+    # NOTE: Stripe is configured to deliver to Lovable's payments-webhook, which
+    # verifies the signature and forwards a signed event to /lovable-sync. This
+    # handler is therefore believed to be unreachable. Rather than delete it blind
+    # — if some endpoint still points here, deleting would drop live billing events
+    # — it now announces itself loudly. If this line never appears in the logs, the
+    # handler is confirmed dead and can be removed.
+    logger.warning(
+        "Direct Stripe webhook invoked on Railway. Billing is expected to flow "
+        "Stripe -> Lovable payments-webhook -> /lovable-sync. If you see this, one "
+        "of those assumptions is wrong."
+    )
+
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
     webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
@@ -224,6 +236,62 @@ async def create_billing_portal(
             detail="Could not open the billing portal. Please try again."
         )
 
+@router.post("/cancel")
+async def cancel_subscription(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancel at the end of the current billing period.
+
+    The web dashboard has always called POST /billing/cancel, but no such route
+    existed — the Cancel button returned 404 and customers could not self-serve a
+    cancellation.
+
+    This defers to Stripe rather than writing subscription state directly: Stripe
+    emits customer.subscription.updated, Lovable's payments-webhook upserts its own
+    row and forwards the signed event to /lovable-sync, and the status lands here
+    through the one authoritative path. Setting the flag locally as well would put
+    two writers on the same field again.
+    """
+    if not current_user.stripe_subscription_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No active subscription to cancel.",
+        )
+    if not stripe.api_key:
+        raise HTTPException(status_code=500, detail="STRIPE_SECRET_KEY not configured")
+
+    try:
+        subscription = stripe.Subscription.modify(
+            current_user.stripe_subscription_id,
+            cancel_at_period_end=True,
+        )
+    except Exception as e:
+        logger.error(f"Cancel failed for user {current_user.id}: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail="Could not cancel the subscription. Please try again.",
+        )
+
+    # Reflect it immediately so the UI updates without waiting for the webhook
+    # round-trip. The authoritative value still arrives via /lovable-sync.
+    current_user.cancel_at_period_end = True
+    await audit.record(
+        db, audit.SUBSCRIPTION_CHANGED, user_id=current_user.id, email=current_user.email,
+        detail=f"cancel_at_period_end=True via /billing/cancel "
+               f"(subscription={current_user.stripe_subscription_id})",
+    )
+    await db.commit()
+
+    period_end = getattr(subscription, "current_period_end", None)
+    return {
+        "status": "ok",
+        "cancel_at_period_end": True,
+        "current_period_end": period_end,
+        "detail": "Your subscription will remain active until the end of the current billing period.",
+    }
+
+
 @router.post("/lovable-sync")
 async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
     """
@@ -255,9 +323,23 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
         
     email = data.get("email")
     status_str = data.get("status")
-    
+
     if not email:
         raise HTTPException(status_code=400, detail="Email is required")
+
+    # Reject anything that is not a live payment. Lovable's subscriptions table
+    # carries an environment column and the web app filters on it, but this payload
+    # historically had no such field — so a Stripe test-mode payment could flip a
+    # user to PAID here for real. Defence on the receiving side: do not rely on the
+    # sender to filter. Payloads with no environment are treated as live so existing
+    # senders keep working.
+    environment = (data.get("environment") or "live").strip().lower()
+    if environment != "live":
+        logger.warning(
+            f"lovable-sync: ignoring {environment!r} (non-live) event for {email!r} "
+            f"status={status_str!r}"
+        )
+        return {"status": "ignored", "reason": f"environment={environment} is not live"}
 
     # 3. Lookup User
     #    Case-insensitive: emails are stored as the user typed them, and Postgres

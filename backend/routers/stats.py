@@ -15,7 +15,6 @@ from schemas import (
 )
 from dependencies import get_current_user
 from routers.achievements import check_and_grant_achievements
-from rate_limit import limit_by_identity
 
 import logging
 
@@ -122,45 +121,12 @@ async def internal_record_stats(user: User, db: AsyncSession, data: RecordWordsR
     await db.commit()
     return new_unlocks
 
-# A single dictation clip is capped at ~10 minutes of audio; even very fast speech
-# stays well under this. Anything larger is not a real transcription.
-MAX_SELF_REPORTED_WORDS = 3000
-
-
-@router.post("/record")
-async def record_words(
-    data: RecordWordsRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Save word count from a transcription event.
-
-    NOTE: this endpoint trusts a client-supplied count, so it can be used to inflate
-    total_words, streaks, achievements and leaderboard position. /api/transcribe
-    already records stats internally, so nothing in the desktop app needs this.
-    It is bounded and rate-limited here rather than deleted, because the web
-    dashboard may still call it — confirm that, then remove it.
-    """
-    await limit_by_identity(
-        "stats_record", str(current_user.id), limit=30, window_seconds=60
-    )
-
-    if data.word_count > MAX_SELF_REPORTED_WORDS:
-        logger.warning(
-            f"User {current_user.id} self-reported {data.word_count} words "
-            f"(cap {MAX_SELF_REPORTED_WORDS}) — rejected."
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=f"word_count exceeds the maximum of {MAX_SELF_REPORTED_WORDS} per record.",
-        )
-
-    new_unlocks = await internal_record_stats(current_user, db, data)
-    return {
-        "status": "ok",
-        "recorded_words": data.word_count,
-        "new_achievements": new_unlocks,
-    }
+# NOTE: POST /api/stats/record used to live here. It accepted a client-supplied
+# word count and added it straight to total_words, streaks, achievements and
+# leaderboard rank — i.e. every competitive number was forgeable with one request.
+# The web app's audit confirms it defines the call but marks it desktop-only, and
+# the desktop never used it either, so nothing was calling it. Transcription records
+# stats internally via internal_record_stats(), which remains the only writer.
 
 @router.get("/summary", response_model=StatsSummaryResponse)
 async def get_summary(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):

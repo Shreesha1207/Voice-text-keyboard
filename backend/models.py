@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, date
-from sqlalchemy import String, DateTime, Boolean, Integer, Float, ForeignKey, Date, Text, Enum as SAEnum
+from sqlalchemy import String, DateTime, Boolean, Integer, Float, ForeignKey, Date, Text, UniqueConstraint, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 from database import Base
@@ -137,6 +137,11 @@ class Achievement(Base):
 
 class UserAchievement(Base):
     __tablename__ = "user_achievements"
+    # Two concurrent transcriptions could both observe an achievement as un-unlocked
+    # and both insert it, giving the user duplicate badges.
+    __table_args__ = (
+        UniqueConstraint("user_id", "achievement_slug", name="uq_user_achievement"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)

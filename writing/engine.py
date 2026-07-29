@@ -37,6 +37,10 @@ class WritingEngine:
         if self._running:
             return
         self._running = True
+        # Surface a missing clipboard backend once, at startup, instead of failing
+        # silently on every selection.
+        from writing import clipboard
+        clipboard.check_available()
         # Load preferences in background and keep syncing so webapp changes reflect instantly
         threading.Thread(target=self._preference_polling_loop, daemon=True).start()
         self.mouse_listener = mouse.Listener(on_click=self._on_click)

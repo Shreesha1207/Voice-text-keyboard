@@ -19,10 +19,12 @@ import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone, date as date_type
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from openai import AsyncOpenAI
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -114,10 +116,21 @@ def _writing_status(user: User) -> dict:
     }
 
 
+def _user_today(user: User) -> date_type:
+    """'Today' in the user's own timezone.
+
+    The dictation side already computes streaks and daily totals this way. Using UTC
+    here meant an IST user's daily writing cap reset at 05:30 local, mid-morning.
+    """
+    try:
+        return datetime.now(ZoneInfo(user.timezone or "UTC")).date()
+    except Exception:
+        return datetime.utcnow().date()
+
+
 def _today_count(user: User) -> int:
     """Return writing_actions_today, treating a stale date as 0."""
-    today = datetime.utcnow().date()
-    if user.writing_today_date == today:
+    if user.writing_today_date == _user_today(user):
         return user.writing_actions_today
     return 0
 
@@ -146,7 +159,7 @@ def _enforce_daily_cap(user: User) -> None:
 
 def _bump_daily_counter(user: User) -> None:
     """Increment today's counter, resetting if the date has changed."""
-    today = datetime.utcnow().date()
+    today = _user_today(user)
     if user.writing_today_date != today:
         user.writing_actions_today = 0
         user.writing_today_date = today
@@ -337,7 +350,15 @@ async def _get_or_create_prefs(db: AsyncSession, user_id: uuid.UUID) -> WritingP
     if prefs is None:
         prefs = WritingPreferences(user_id=user_id)
         db.add(prefs)
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError:
+            # Two concurrent first-calls both saw None and both inserted; the loser
+            # rolls back and reads the row the winner created.
+            await db.rollback()
+            res = await db.execute(stmt)
+            prefs = res.scalar_one()
+            return prefs
         await db.refresh(prefs)
     return prefs
 
@@ -432,6 +453,12 @@ async def record_writing_action(
     """
     action_name = req.action_key or req.action or "improve"
 
+    # This endpoint skipped both gates that every sibling applies, so a user with no
+    # writing entitlement — or one already over their daily cap — could still record
+    # usage against it.
+    _require_writing_access(current_user)
+    _enforce_daily_cap(current_user)
+
     _bump_daily_counter(current_user)
     current_user.writing_actions_this_month += 1
 
@@ -497,44 +524,47 @@ async def writing_usage(
     def naive(dt: datetime) -> datetime:
         return dt.replace(tzinfo=None)
 
-    # ── Weekly rows (last 7 days) ──────────────────────────────────────────
+    # These used to SELECT whole WritingAction rows — including the large input_text
+    # and output_text columns — for 7 and 30 days, then count them in Python. For a
+    # heavy user that pulled megabytes across the wire to produce two small numbers.
+    # Count in SQL instead; only the aggregates come back.
+
+    # ── Weekly counts (last 7 days), grouped by day ────────────────────────
+    day_expr = func.date(WritingAction.created_at)
     weekly_q = await db.execute(
-        select(WritingAction)
+        select(day_expr.label("day"), func.count(WritingAction.id).label("cnt"))
         .where(
             WritingAction.user_id == current_user.id,
             WritingAction.success == True,
             WritingAction.created_at >= naive(week_ago),
         )
-        .order_by(WritingAction.created_at)
+        .group_by(day_expr)
     )
-    weekly_rows = weekly_q.scalars().all()
-
-    # Build 7-day chart (oldest → newest)
     daily_map: dict[str, int] = defaultdict(int)
-    for r in weekly_rows:
-        daily_map[r.created_at.strftime("%Y-%m-%d")] += 1
+    for day, cnt in weekly_q.all():
+        # func.date() yields a date on Postgres and a string on SQLite.
+        daily_map[day.strftime("%Y-%m-%d") if hasattr(day, "strftime") else str(day)] = cnt
 
     weekly = []
     for i in range(7):
         d = (now - timedelta(days=6 - i)).strftime("%Y-%m-%d")
         weekly.append({"date": d, "count": daily_map.get(d, 0)})
 
-    # ── This-month rows ───────────────────────────────────────────────────
+    # ── This-month breakdown, grouped by action ───────────────────────────
     month_q = await db.execute(
-        select(WritingAction)
+        select(WritingAction.action, func.count(WritingAction.id))
         .where(
             WritingAction.user_id == current_user.id,
             WritingAction.success == True,
             WritingAction.created_at >= naive(month_ago),
         )
+        .group_by(WritingAction.action)
     )
-    month_rows = month_q.scalars().all()
-
-    # Action breakdown
     by_action: dict[str, int] = defaultdict(int)
-    for r in month_rows:
-        norm_key = _ACTION_KEY_MAP.get(r.action, r.action)
-        by_action[norm_key] += 1
+    month_total = 0
+    for action_name, cnt in month_q.all():
+        by_action[_ACTION_KEY_MAP.get(action_name, action_name)] += cnt
+        month_total += cnt
 
     actions = [
         {"key": key, "used": by_action.get(key, 0)}
@@ -546,7 +576,7 @@ async def writing_usage(
 
     return {
         "actions":          actions,
-        "total_this_month": len(month_rows),
+        "total_this_month": month_total,
         "daily_used":       st["actions_today"],
         "daily_limit":      st["daily_limit"],   # None for paid
         "weekly":           weekly,

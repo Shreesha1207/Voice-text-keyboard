@@ -417,6 +417,27 @@ class AuthHandler(BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.end_headers()
 
+        elif self.path == '/logout':
+            # The web app posts here when the user logs out in the browser, but no
+            # such route existed — the handler fell through without sending any
+            # response at all. Logout still propagated eventually (the server bumps
+            # token_version, so the next API call 401s), but not immediately.
+            logger.info("Logout ping received from browser; clearing local token.")
+            try:
+                if os.path.exists(CONFIG_FILE):
+                    os.remove(CONFIG_FILE)
+            except OSError as e:
+                logger.warning(f"Could not remove config on logout ping: {e}")
+            self.send_response(200)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(b'{"status":"logged_out"}')
+
+        else:
+            # Always answer something. Falling through left the caller hanging.
+            self.send_response(404)
+            self.end_headers()
+
     def log_message(self, format, *args):
         pass          # silence server logs
 

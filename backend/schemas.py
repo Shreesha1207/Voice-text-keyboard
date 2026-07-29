@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, AliasChoices
 from typing import Optional
 from models import SubscriptionStatus
 
@@ -48,7 +48,21 @@ class ValidateResponse(BaseModel):
 
 
 class HotkeyUpdate(BaseModel):
-    hotkey: str = Field(..., max_length=20)
+    # The web app sends {"custom_hotkey": ...} while this required {"hotkey": ...},
+    # so every save from the dashboard failed validation with a 422 and the hotkey
+    # silently never changed. Accept either spelling — the frontend deploys
+    # separately, so the backend meeting it halfway is what actually fixes this for
+    # users already on the current web build.
+    hotkey: str = Field(
+        ..., max_length=20,
+        validation_alias=AliasChoices("hotkey", "custom_hotkey"),
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+class LeaderboardOptInUpdate(BaseModel):
+    opt_in: bool
 
 
 class LanguageUpdate(BaseModel):

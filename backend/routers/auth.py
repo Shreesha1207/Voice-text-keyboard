@@ -11,6 +11,7 @@ from models import User, SubscriptionStatus
 from schemas import (
     UserRegister, UserLogin, TokenResponse, RefreshRequest, ValidateResponse,
     GoogleAuthCode, UserOut, HotkeyUpdate, LanguageUpdate, TranslationUpdate,
+    LeaderboardOptInUpdate,
     ForgotPasswordRequest, ResetPasswordRequest
 )
 from security import (
@@ -26,9 +27,20 @@ import secrets
 from datetime import timedelta
 
 import audit
+import hashlib
 from rate_limit import limit_by_ip, limit_by_identity
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
+
+
+def _hash_reset_token(token: str) -> str:
+    """Hash a password-reset token for storage.
+
+    Only the hash is persisted; the plaintext exists solely in the email we send.
+    SHA-256 without a salt is appropriate here because the input is 256 bits of
+    cryptographic randomness — there is no dictionary to attack, unlike a password.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 @router.post(
     "/register",
@@ -172,6 +184,27 @@ async def google_auth(auth_data: GoogleAuthCode, background_tasks: BackgroundTas
              name = decoded_id_token.get("name")
         except Exception:
              raise HTTPException(status_code=400, detail="Could not parse Google token")
+
+        # Validate the claims. The token came straight from Google's token endpoint
+        # over TLS using our client secret, so the signature is implicitly trusted —
+        # but nothing checked who the token was *for*. Without an audience check, an
+        # ID token minted for a different application would be accepted here.
+        issuer = decoded_id_token.get("iss")
+        if issuer not in ("accounts.google.com", "https://accounts.google.com"):
+            raise HTTPException(status_code=400, detail="Google token has an unexpected issuer")
+
+        audience = decoded_id_token.get("aud")
+        if audience != client_id:
+            raise HTTPException(status_code=400, detail="Google token was not issued for this application")
+
+        exp = decoded_id_token.get("exp")
+        if exp and datetime.now(timezone.utc).timestamp() > float(exp):
+            raise HTTPException(status_code=400, detail="Google token has expired")
+
+        # Google sets this false for unverified addresses; accepting them would let
+        # someone claim an email they do not control.
+        if decoded_id_token.get("email_verified") is False:
+            raise HTTPException(status_code=400, detail="Google account email is not verified")
 
     if not email:
         raise HTTPException(status_code=400, detail="Email not provided by Google")
@@ -352,7 +385,11 @@ async def forgot_password(
 
     if user and user.password_hash:  # Only for email/password accounts
         token = secrets.token_urlsafe(32)
-        user.password_reset_token = token
+        # Store only a hash. The plaintext goes in the email and nowhere else, so a
+        # database leak cannot be replayed into an account takeover inside the
+        # 15-minute window. Plain SHA-256 is right here (unlike passwords): the token
+        # is 256 bits of randomness, so there is nothing to brute-force.
+        user.password_reset_token = _hash_reset_token(token)
         user.password_reset_expires = datetime.now(timezone.utc) + timedelta(minutes=15)
         await db.commit()
 
@@ -387,7 +424,8 @@ async def reset_password(
     db: AsyncSession = Depends(get_db)
 ):
     """Reset password using a valid token from the reset email."""
-    stmt = select(User).where(User.password_reset_token == data.token)
+    # Look the token up by its hash — see _hash_reset_token.
+    stmt = select(User).where(User.password_reset_token == _hash_reset_token(data.token))
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
 
@@ -417,6 +455,22 @@ async def reset_password(
     await db.commit()
 
     return {"status": "ok", "detail": "Password updated successfully. Please sign in with your new password."}
+
+@router.patch("/leaderboard-opt-in")
+async def update_leaderboard_opt_in(
+    data: LeaderboardOptInUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Opt in or out of the public leaderboard.
+
+    The column defaulted to True and nothing anywhere could change it, so every
+    user's display name was published without consent and with no way to withdraw.
+    """
+    current_user.is_leaderboard_opt_in = data.opt_in
+    await db.commit()
+    return {"status": "ok", "is_leaderboard_opt_in": data.opt_in}
+
 
 @router.patch("/timezone")
 async def update_timezone(
