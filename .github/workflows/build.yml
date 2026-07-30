@@ -34,21 +34,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install webrtcvad-wheels pynput python-dotenv requests pystray Pillow pyinstaller
+          pip install pynput python-dotenv requests pystray Pillow pyinstaller
           pip install PyAudio --find-links https://github.com/intxcc/pyaudio_portaudio/releases
-
-      - name: Fix webrtcvad metadata
-        shell: pwsh
-        run: |
-          # Find the actual site-packages directory (not the Python root)
-          $site = python -c "import site; dirs = site.getsitepackages(); sp = next((d for d in dirs if 'site-packages' in d), dirs[-1]); print(sp)"
-          Write-Host "Using site-packages: $site"
-          $dir = "$site\webrtcvad-2.0.14.dist-info"
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          Set-Content "$dir\METADATA" "Metadata-Version: 2.1`nName: webrtcvad`nVersion: 2.0.14"
-          Set-Content "$dir\INSTALLER" "pip"
-          Write-Host "Created: $dir\METADATA"
-          Get-Content "$dir\METADATA"
 
       - name: Build xvoice.exe
         run: pyinstaller --noconfirm xvoice.spec
@@ -93,8 +80,8 @@ jobs:
         run: brew install portaudio create-dmg
 
       - name: Build Xvoice.app
-        # build_mac.sh installs from requirements.txt, patches the webrtcvad
-        # metadata, generates the .icns, bundles ffmpeg and signs the bundle.
+        # build_mac.sh installs from requirements.txt, generates the .icns,
+        # bundles ffmpeg and signs the bundle.
         env:
           PYTHON: python
         run: |
@@ -173,16 +160,7 @@ jobs:
           sudo apt-get install -y libgirepository-1.0-dev
 
       - name: Install Python dependencies
-        run: pip install pyaudio pynput webrtcvad-wheels python-dotenv requests pystray Pillow pyinstaller
-
-      - name: Fix webrtcvad metadata
-        run: |
-          SITE=$(python -c "import site; print(site.getsitepackages()[0])")
-          DIR="$SITE/webrtcvad-2.0.14.dist-info"
-          mkdir -p "$DIR"
-          printf 'Metadata-Version: 2.1\nName: webrtcvad\nVersion: 2.0.14\n' > "$DIR/METADATA"
-          echo "Created: $DIR/METADATA"
-          cat "$DIR/METADATA"
+        run: pip install pyaudio pynput python-dotenv requests pystray Pillow pyinstaller
 
       - name: Build xvoice binary
         run: xvfb-run pyinstaller --noconfirm xvoice.spec

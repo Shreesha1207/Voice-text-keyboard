@@ -4,13 +4,15 @@ import sys
 from pynput import keyboard as pk
 import os
 import subprocess
-import webrtcvad
+import array
 import json
 import time
 import threading
 import webbrowser
 import socket
 import tempfile
+import secrets
+import hmac
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
 import pystray
@@ -48,6 +50,11 @@ else:  # Linux
 CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
 
 auth_success = False
+# CSRF guard for the local login callback. The desktop generates this before
+# opening the browser and only accepts a /auth POST that echoes it back. Without
+# it, ANY web page open in the browser could POST a token to 127.0.0.1:45678/auth
+# and silently bind this app to the attacker's account.
+_expected_state: str | None = None
 tray_icon = None
 PREFERRED_LANGUAGE = "en"
 IS_TRANSLATION_ENABLED = False
@@ -407,10 +414,30 @@ def save_token(access_token, refresh_token=None):
 #   Magic Auth (one-time browser login)
 # ─────────────────────────────────────────────
 
+# Only these origins may talk to the local login server. The connect-desktop page
+# is served from the production domain; nothing else has any business here.
+_ALLOWED_LOGIN_ORIGINS = {
+    "https://xvoicekeyboard.com",
+    "https://www.xvoicekeyboard.com",
+}
+
+
 class AuthHandler(BaseHTTPRequestHandler):
+    def _send_cors_origin(self):
+        """Echo the request Origin only if it is allow-listed.
+
+        A wildcard here let any site read our responses; combined with the missing
+        state check it was the whole vulnerability. We now reflect only known-good
+        origins, and fall back to the production domain for same-origin/no-Origin
+        callers (e.g. the desktop itself).
+        """
+        origin = self.headers.get('Origin')
+        allowed = origin if origin in _ALLOWED_LOGIN_ORIGINS else "https://xvoicekeyboard.com"
+        self.send_header('Access-Control-Allow-Origin', allowed)
+
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self._send_cors_origin()
         self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
@@ -421,16 +448,30 @@ class AuthHandler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length).decode('utf-8'))
             token = data.get('token')
             refresh = data.get('refresh_token')   # optional; sent by some frontend versions
+            state = data.get('state', '')
+
+            # CSRF check: the callback must echo the random state we minted before
+            # opening the browser. A malicious page cannot guess it, so it cannot
+            # complete the login even though it can reach this port.
+            if not _expected_state or not hmac.compare_digest(str(state), _expected_state):
+                logger.warning("Rejected /auth callback: state mismatch (possible CSRF).")
+                self.send_response(403)
+                self._send_cors_origin()
+                self.end_headers()
+                self.wfile.write(b'{"status":"forbidden"}')
+                return
+
             if token:
                 save_token(token, refresh)
                 self.send_response(200)
-                self.send_header('Access-Control-Allow-Origin', '*')
+                self._send_cors_origin()
                 self.end_headers()
                 self.wfile.write(b'{"status":"success"}')
                 global auth_success
                 auth_success = True
             else:
                 self.send_response(400)
+                self._send_cors_origin()
                 self.end_headers()
 
         elif self.path == '/logout':
@@ -445,7 +486,7 @@ class AuthHandler(BaseHTTPRequestHandler):
             except OSError as e:
                 logger.warning(f"Could not remove config on logout ping: {e}")
             self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self._send_cors_origin()
             self.end_headers()
             self.wfile.write(b'{"status":"logged_out"}')
 
@@ -589,7 +630,12 @@ def require_auth():
         "Sign in required — check your browser to reconnect.",
         "Xvoice"
     )
-    webbrowser.open(f"{FRONTEND_URL}/connect-desktop")
+    # Mint a fresh CSRF state for this login attempt and pass it to the browser.
+    # The connect-desktop page echoes it back in the /auth POST; do_POST rejects any
+    # callback that does not match.
+    global _expected_state
+    _expected_state = secrets.token_urlsafe(24)
+    webbrowser.open(f"{FRONTEND_URL}/connect-desktop?state={_expected_state}")
 
     server = HTTPServer(('127.0.0.1', LOCAL_PORT), AuthHandler)
     server.timeout = 1
@@ -763,39 +809,120 @@ def is_pressed(_):
     return hotkey_pressed
 
 def _paste_text(text):
-    """Clipboard-paste fallback (pyperclip + Ctrl+V). Plain text, not AI."""
+    """Insert text via the clipboard and Ctrl+V (Cmd+V on macOS).
+
+    Atomic from the target application's point of view: the whole string arrives in
+    one operation, so there is no per-character race to lose.
+
+    Raises on failure so the caller can fall back to keystroke typing.
+    """
     import pyperclip
+
     try:
         prev = pyperclip.paste() or ""
     except Exception:
         prev = ""
-    pyperclip.copy(text)
-    time.sleep(0.05)
+
+    # Put our text on the clipboard and CONFIRM it landed before pasting. If the
+    # copy silently failed, pasting would insert whatever was on the clipboard
+    # before — dumping unrelated content into the user's document, which is far
+    # worse than a dropped character. Retry briefly; some clipboard backends are
+    # slow to make a write visible.
+    placed = False
+    for _ in range(5):
+        pyperclip.copy(text)
+        time.sleep(0.03)
+        try:
+            if pyperclip.paste() == text:
+                placed = True
+                break
+        except Exception:
+            pass
+    if not placed:
+        raise RuntimeError("clipboard did not accept the text")
+
     ctrl = pk.Controller()
     mod = pk.Key.cmd if sys.platform == "darwin" else pk.Key.ctrl
     ctrl.press(mod); ctrl.press('v'); ctrl.release('v'); ctrl.release(mod)
-    time.sleep(0.15)
+
+    # Give the target app time to consume the paste before we put the old clipboard
+    # back. Restoring too early can make the app paste the PREVIOUS contents.
+    time.sleep(0.25)
     try:
         pyperclip.copy(prev)
     except Exception:
         pass
 
-def write_text(text):
-    """Primary: pynput keystroke typing. Fallback: clipboard paste, only if typing raises."""
-    try:
-        pk.Controller().type(text)
-    except Exception as e:
-        logger.warning(f"Keystroke typing failed ({e}); using clipboard paste.")
-        try:
-            _paste_text(text)
-        except Exception as e2:
-            logger.error(f"Clipboard paste fallback also failed: {e2}")
 
-try:
-    vad = webrtcvad.Vad(1)
-except Exception as e:
-    logger.error(f"webrtcvad failed to initialise: {e}. VAD disabled — all audio will be captured.")
-    vad = None
+def write_text(text):
+    """Insert transcribed text into the focused application.
+
+    Clipboard paste is the primary path. pynput's type() sends one synthetic
+    keystroke per character, which races the target application's input queue —
+    busy apps, Electron apps, browsers and remote sessions silently drop characters,
+    producing exactly the "missing a letter in the middle of a word" symptom. A
+    paste is a single atomic operation and cannot be partially applied.
+
+    Note this was already the intent — there was a paste fallback here — but it only
+    triggered when type() raised an *exception*. Dropped characters raise nothing:
+    typing "succeeds" while quietly losing text, so the fallback never fired for the
+    one failure mode it was meant to cover.
+
+    Set XVOICE_INSERT_METHOD=type to force keystroke typing (useful in apps where
+    Ctrl+V is bound to something else, e.g. some terminals).
+    """
+    method = os.getenv("XVOICE_INSERT_METHOD", "paste").strip().lower()
+
+    if method == "type":
+        pk.Controller().type(text)
+        return
+
+    try:
+        _paste_text(text)
+    except Exception as e:
+        logger.warning(f"Clipboard paste failed ({e}); falling back to keystroke typing.")
+        try:
+            pk.Controller().type(text)
+        except Exception as e2:
+            logger.error(f"Keystroke typing fallback also failed: {e2}")
+
+# No voice-activity detection. The recording is captured whole and sent as-is.
+#
+# It previously ran every 30 ms frame through webrtcvad and made keep/drop decisions.
+# That was the wrong tool for the job: quiet consonants get classified as
+# non-speech, so letters were deleted before upload, and because dropped frames were
+# removed rather than silenced the audio was spliced mid-word. The transcription
+# model is trained on real-world continuous audio — it handles silence and background
+# noise far better than frame-level gating ever did, and it cannot recover audio we
+# threw away.
+#
+# The only thing still worth checking locally is whether the user actually said
+# anything, so a mis-tap of the hotkey doesn't cost a network round-trip. That needs
+# nothing more than a peak-amplitude reading.
+
+# 16-bit samples run to ±32767. A real utterance peaks in the thousands even when
+# softly spoken; room tone and mic self-noise sit far below this.
+SILENCE_PEAK_THRESHOLD = 500
+
+
+def _peak_amplitude(pcm: bytes) -> int:
+    """Largest absolute 16-bit sample in a little-endian PCM buffer.
+
+    Uses array rather than audioop: audioop is deprecated from 3.11 and removed in
+    3.13, and this app runs on whatever Python the user happens to have.
+    """
+    try:
+        samples = array.array('h')
+        # frombytes needs a whole number of samples
+        samples.frombytes(pcm[: len(pcm) - (len(pcm) % samples.itemsize)])
+        if sys.byteorder == 'big':
+            samples.byteswap()
+        if not samples:
+            return 0
+        return max(max(samples), -min(samples))
+    except Exception:
+        # Never let a measurement problem discard a real recording.
+        return SILENCE_PEAK_THRESHOLD + 1
 
 # ─────────────────────────────────────────────
 #   Audio pipeline
@@ -861,15 +988,16 @@ def record_audio(output_filename):
             time.sleep(0.1)
         return False
 
+    # Capture the whole recording, unmodified. No per-frame decisions at all — just
+    # read the microphone for as long as the key is held.
     frames = []
     while is_pressed(HOTKEY):
         try:
-            data = stream.read(CHUNK, exception_on_overflow=False)
-            if vad is None or vad.is_speech(data, RATE):
-                frames.append(data)
+            frames.append(stream.read(CHUNK, exception_on_overflow=False))
         except IOError:
             pass
-    
+
+
     if winsound:
         winsound.Beep(800, 100)
     stream.stop_stream()
@@ -882,11 +1010,26 @@ def record_audio(output_filename):
     if not frames:
         return False
 
+    audio_bytes = b''.join(frames)
+
+    # Only guard: was anything actually said? This skips a pointless upload after a
+    # mis-tap of the hotkey. It looks at the whole recording, so nothing is trimmed
+    # or altered — it either all goes or none of it does.
+    peak = _peak_amplitude(audio_bytes)
+    if peak < SILENCE_PEAK_THRESHOLD:
+        logger.info(f"Recording is silent (peak {peak} < {SILENCE_PEAK_THRESHOLD}); skipping upload.")
+        return False
+
+    logger.debug(
+        f"Captured {len(frames)} frames "
+        f"({len(frames) * CHUNK / RATE:.2f}s, peak {peak}) — sending unmodified"
+    )
+
     with wave.open(output_filename, 'wb') as wf:
         wf.setnchannels(CHANNELS)
         wf.setsampwidth(sample_width)
         wf.setframerate(RATE)
-        wf.writeframes(b''.join(frames))
+        wf.writeframes(audio_bytes)
     return True
 
 def normalize_audio(input_file, output_file):
