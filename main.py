@@ -4,7 +4,7 @@ import sys
 from pynput import keyboard as pk
 import os
 import subprocess
-import webrtcvad
+import array
 import json
 import time
 import threading
@@ -886,20 +886,43 @@ def write_text(text):
         except Exception as e2:
             logger.error(f"Keystroke typing fallback also failed: {e2}")
 
-try:
-    # Mode 0 = least aggressive. The VAD no longer decides which audio to keep (see
-    # record_audio), only whether speech was present and where to trim, so the
-    # permissive setting is the right one: it errs toward calling quiet consonants
-    # speech, which keeps the trim boundaries safely wide.
-    vad = webrtcvad.Vad(0)
-except Exception as e:
-    logger.error(f"webrtcvad failed to initialise: {e}. VAD disabled — all audio will be captured.")
-    vad = None
+# No voice-activity detection. The recording is captured whole and sent as-is.
+#
+# It previously ran every 30 ms frame through webrtcvad and made keep/drop decisions.
+# That was the wrong tool for the job: quiet consonants get classified as
+# non-speech, so letters were deleted before upload, and because dropped frames were
+# removed rather than silenced the audio was spliced mid-word. The transcription
+# model is trained on real-world continuous audio — it handles silence and background
+# noise far better than frame-level gating ever did, and it cannot recover audio we
+# threw away.
+#
+# The only thing still worth checking locally is whether the user actually said
+# anything, so a mis-tap of the hotkey doesn't cost a network round-trip. That needs
+# nothing more than a peak-amplitude reading.
 
-# Frames of audio kept either side of detected speech when trimming. CHUNK is 30 ms
-# at 16 kHz, so 10 frames ≈ 300 ms — enough to preserve a word's true onset, which
-# the VAD always reports slightly late.
-SILENCE_PAD_FRAMES = 10
+# 16-bit samples run to ±32767. A real utterance peaks in the thousands even when
+# softly spoken; room tone and mic self-noise sit far below this.
+SILENCE_PEAK_THRESHOLD = 500
+
+
+def _peak_amplitude(pcm: bytes) -> int:
+    """Largest absolute 16-bit sample in a little-endian PCM buffer.
+
+    Uses array rather than audioop: audioop is deprecated from 3.11 and removed in
+    3.13, and this app runs on whatever Python the user happens to have.
+    """
+    try:
+        samples = array.array('h')
+        # frombytes needs a whole number of samples
+        samples.frombytes(pcm[: len(pcm) - (len(pcm) % samples.itemsize)])
+        if sys.byteorder == 'big':
+            samples.byteswap()
+        if not samples:
+            return 0
+        return max(max(samples), -min(samples))
+    except Exception:
+        # Never let a measurement problem discard a real recording.
+        return SILENCE_PEAK_THRESHOLD + 1
 
 # ─────────────────────────────────────────────
 #   Audio pipeline
@@ -965,34 +988,12 @@ def record_audio(output_filename):
             time.sleep(0.1)
         return False
 
-    # Capture EVERY frame. The VAD result is recorded alongside, but is no longer
-    # used to decide what to keep.
-    #
-    # Previously only frames the VAD called "speech" were appended, and the
-    # survivors were concatenated. That did two damaging things:
-    #   1. Low-energy consonants (s, f, th, t, k, p) are routinely classified as
-    #      non-speech, so those frames were deleted — letters literally vanished
-    #      from the audio before it was ever transcribed.
-    #   2. Because dropped frames were removed rather than silenced, the remaining
-    #      audio was spliced together with abrupt discontinuities. Transcription
-    #      models are trained on continuous speech; splices are out-of-distribution
-    #      and cause merged or skipped words.
-    # Keeping the audio continuous is worth far more than the few KB the filtering
-    # saved.
+    # Capture the whole recording, unmodified. No per-frame decisions at all — just
+    # read the microphone for as long as the key is held.
     frames = []
-    speech_flags = []
     while is_pressed(HOTKEY):
         try:
-            data = stream.read(CHUNK, exception_on_overflow=False)
-            frames.append(data)
-            if vad is None:
-                speech_flags.append(True)
-            else:
-                try:
-                    speech_flags.append(vad.is_speech(data, RATE))
-                except Exception:
-                    # Treat an unreadable frame as speech — never drop audio.
-                    speech_flags.append(True)
+            frames.append(stream.read(CHUNK, exception_on_overflow=False))
         except IOError:
             pass
 
@@ -1009,31 +1010,26 @@ def record_audio(output_filename):
     if not frames:
         return False
 
-    # The VAD's only remaining job: decide whether anything was said at all, so we
-    # don't upload pure silence, and trim the dead air at each end. The span between
-    # the first and last speech frame is kept intact — never gapped.
-    if any(speech_flags):
-        first = speech_flags.index(True)
-        last = len(speech_flags) - 1 - speech_flags[::-1].index(True)
-        # Keep generous padding around the speech: the VAD needs a frame or two to
-        # latch on, so the true onset of the first word sits before `first`.
-        start = max(0, first - SILENCE_PAD_FRAMES)
-        end = min(len(frames), last + 1 + SILENCE_PAD_FRAMES)
-        frames = frames[start:end]
-        logger.debug(
-            f"Captured {len(speech_flags)} frames, kept {len(frames)} "
-            f"(speech {first}-{last}, {SILENCE_PAD_FRAMES}-frame pad)"
-        )
-    else:
-        # No speech detected anywhere — almost certainly a mis-tap.
-        logger.info("No speech detected in recording; skipping upload.")
+    audio_bytes = b''.join(frames)
+
+    # Only guard: was anything actually said? This skips a pointless upload after a
+    # mis-tap of the hotkey. It looks at the whole recording, so nothing is trimmed
+    # or altered — it either all goes or none of it does.
+    peak = _peak_amplitude(audio_bytes)
+    if peak < SILENCE_PEAK_THRESHOLD:
+        logger.info(f"Recording is silent (peak {peak} < {SILENCE_PEAK_THRESHOLD}); skipping upload.")
         return False
+
+    logger.debug(
+        f"Captured {len(frames)} frames "
+        f"({len(frames) * CHUNK / RATE:.2f}s, peak {peak}) — sending unmodified"
+    )
 
     with wave.open(output_filename, 'wb') as wf:
         wf.setnchannels(CHANNELS)
         wf.setsampwidth(sample_width)
         wf.setframerate(RATE)
-        wf.writeframes(b''.join(frames))
+        wf.writeframes(audio_bytes)
     return True
 
 def normalize_audio(input_file, output_file):

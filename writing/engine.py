@@ -22,14 +22,8 @@ class WritingEngine:
         self.overlay_manager = OverlayManager(self)
         self.mouse_listener = None
         self._running = False
-        self._left_press_pos = (0, 0)   # where the left button went down (drag detection)
         self._last_click_x = 100
         self._last_click_y = 100
-        # When the user last made a selection gesture (a drag). A right-click only
-        # offers the button if it follows such a gesture, so ordinary right-clicks
-        # in a terminal or browser don't pop it — and nothing copies until the
-        # button is actually clicked.
-        self._last_selection_gesture = 0.0
 
         # User preferences — fetched from backend on start (and refreshed periodically)
         self._auto_replace   = False   # True → replace immediately, no preview
@@ -84,7 +78,6 @@ class WritingEngine:
     def _on_click(self, x, y, button, pressed):
         if button == mouse.Button.left:
             if pressed:
-                self._left_press_pos = (x, y)
                 # Detect a click on the Xvoice button via the GLOBAL hook, so it
                 # works even while a native context menu is grabbing the mouse
                 # (in which case Qt never receives the click on our overlay).
@@ -92,29 +85,24 @@ class WritingEngine:
                     self.on_xvoice_click(x, y)
                     return
             else:
-                px, py = self._left_press_pos
-                dragged = (abs(x - px) + abs(y - py)) > 10
-                if dragged:
-                    # A drag is a selection gesture → offer the button near the
-                    # cursor. Crucially we do NOT copy here: nothing touches the
-                    # clipboard, and no synthetic Ctrl+C is sent, until the user
-                    # actually clicks the button (see on_xvoice_click). That is what
-                    # keeps a stray drag — or a right-click in a terminal, where
-                    # Ctrl+C is SIGINT — from doing anything destructive.
-                    self._last_selection_gesture = time.time()
-                    self.overlay_manager.show_xvoice_button(x, y)
-                else:
-                    # A plain click dismisses the button (unless it landed on it).
-                    self.overlay_manager.on_left_click(x, y)
+                # Releasing a left click — including after a drag — deliberately
+                # does NOT offer the button. Selecting text is not a request to do
+                # anything; the user asks for Xvoice by right-clicking. This keeps
+                # the app completely inert while you are just selecting or editing.
+                self.overlay_manager.on_left_click(x, y)
             return
 
-        # Right-click offers the button too, but only when it follows a recent
-        # selection gesture — so ordinary right-clicks (a browser or terminal
-        # context menu) don't pop it. Still no copy here; the app's own menu opens
-        # as usual, and the button click is caught by the global hook above.
+        # Right-click is the single entry point: it shows the button and nothing
+        # else. No clipboard access, no synthetic Ctrl+C — the app's own context
+        # menu opens exactly as normal alongside it.
+        #
+        # Deliberately not conditional on having seen a drag: text is just as often
+        # selected by double-click, triple-click, Ctrl+A or Shift+arrows, none of
+        # which produce one. Requiring a drag meant the button never appeared for
+        # those. If nothing is in fact selected, clicking the button copies nothing
+        # and dismisses cleanly (see on_xvoice_click).
         if button == mouse.Button.right and pressed:
-            if time.time() - self._last_selection_gesture < 5.0:
-                self.overlay_manager.show_xvoice_button(x, y)
+            self.overlay_manager.show_xvoice_button(x, y)
 
     def on_xvoice_click(self, x, y):
         """Called when the user clicks the floating Xvoice button.
