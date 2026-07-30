@@ -122,7 +122,6 @@ a = Analysis(
         'pystray._xorg',
         'pystray._darwin',
         'pyaudio',
-        'webrtcvad',
         'PIL',
         'PIL.Image',
         'PIL.ImageDraw',
