@@ -1190,7 +1190,7 @@ def voice_loop():
                     require_auth()
                     _maybe_start_writing_engine()   # entitlement may now be active
                 
-                # Periodically sync dictation settings from the webapp (every 1 hour)
+                # Periodically sync dictation settings from the webapp (every 12 hours)
                 # We do this check non-blockingly right before recording if it's been a while
                 global _last_sync_time
                 if time.time() - _last_sync_time > 43200:
