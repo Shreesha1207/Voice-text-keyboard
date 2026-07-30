@@ -29,6 +29,7 @@ class WritingEngine:
         self._auto_replace   = False   # True → replace immediately, no preview
         self._show_preview   = True    # True → show VS Code-style preview widget
         self._default_language = "en"
+        self._prefs_initialized = False
 
     def start(self):
         if self._running:
@@ -47,18 +48,29 @@ class WritingEngine:
         """Fetch writing preferences from the backend and cache them."""
         prefs = self.backend_client.get_preferences()
         if prefs:
-            self._auto_replace    = prefs.get("auto_replace",    self._auto_replace)
-            self._show_preview    = prefs.get("show_preview",    self._show_preview)
-            self._default_language = prefs.get("default_language", self._default_language)
-            logger.info(
-                f"Writing prefs loaded: auto_replace={self._auto_replace}, "
-                f"show_preview={self._show_preview}, lang={self._default_language}"
+            new_auto = prefs.get("auto_replace", self._auto_replace)
+            new_preview = prefs.get("show_preview", self._show_preview)
+            new_lang = prefs.get("default_language", self._default_language)
+
+            changed = (
+                not self._prefs_initialized
+                or new_auto != self._auto_replace
+                or new_preview != self._show_preview
+                or new_lang != self._default_language
             )
 
-    # Polling every 5s was ~17,000 authenticated requests per user per day — a JWT
-    # verification and a DB round-trip each — to deliver three settings that change
-    # rarely. refresh_preferences() already covers the "user just saved" case.
-    PREFERENCE_POLL_SECONDS = 300
+            self._auto_replace = new_auto
+            self._show_preview = new_preview
+            self._default_language = new_lang
+
+            if changed:
+                self._prefs_initialized = True
+                logger.info(
+                    f"Writing prefs loaded: auto_replace={self._auto_replace}, "
+                    f"show_preview={self._show_preview}, lang={self._default_language}"
+                )
+
+    PREFERENCE_POLL_SECONDS = 3600
 
     def _preference_polling_loop(self):
         while self._running:
