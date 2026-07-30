@@ -59,18 +59,10 @@ class WritingEngine:
                 or new_lang != self._default_language
             )
 
-            self._auto_replace = new_auto
-            self._show_preview = new_preview
-            self._default_language = new_lang
-
-            if changed:
-                self._prefs_initialized = True
-                logger.info(
-                    f"Writing prefs loaded: auto_replace={self._auto_replace}, "
-                    f"show_preview={self._show_preview}, lang={self._default_language}"
-                )
-
-    PREFERENCE_POLL_SECONDS = 3600
+    # Polling every 5s was ~17,000 authenticated requests per user per day — a JWT
+    # verification and a DB round-trip each — to deliver three settings that change
+    # rarely. refresh_preferences() already covers the "user just saved" case.
+    PREFERENCE_POLL_SECONDS = 300
 
     def _preference_polling_loop(self):
         while self._running:
@@ -104,16 +96,25 @@ class WritingEngine:
                 self.overlay_manager.on_left_click(x, y)
             return
 
-        # Right-click is the single entry point: it shows the button and nothing
-        # else. No clipboard access, no synthetic Ctrl+C — the app's own context
-        # menu opens exactly as normal alongside it.
+        # Right-click also offers the button (the app's own menu still opens, but
+        # the button click is caught by the global hook above, so it still works).
         #
-        # Deliberately not conditional on having seen a drag: text is just as often
-        # selected by double-click, triple-click, Ctrl+A or Shift+arrows, none of
-        # which produce one. Requiring a drag meant the button never appeared for
-        # those. If nothing is in fact selected, clicking the button copies nothing
-        # and dismisses cleanly (see on_xvoice_click).
+        # It re-uses the selection captured by the preceding drag rather than copying
+        # again. A right-click does not imply the user selected anything, and the
+        # synthetic Ctrl+C fired here landed in whatever app had focus — in a terminal
+        # that is SIGINT, so right-clicking could kill a running process.
         if button == mouse.Button.right and pressed:
+            if self._cached_selected_text and self._cached_selected_text.strip():
+                self.overlay_manager.show_xvoice_button(x, y)
+
+    def _capture_selection_and_show(self, x, y):
+        from writing import selection
+        time.sleep(0.05)
+        selected_text, prev_clipboard = selection.get_selected_text_and_restore()
+
+        if selected_text and selected_text.strip():
+            self._cached_selected_text = selected_text
+            self._cached_prev_clipboard = prev_clipboard
             self.overlay_manager.show_xvoice_button(x, y)
 
     def on_xvoice_click(self, x, y):

@@ -133,23 +133,6 @@ async def process_transcription(job: dict) -> dict:
          # empty/garbage text.
          result["error"] = "transcription_failed"
     return result
-# Serve roughly this many paid jobs for every trial job when both queues are busy.
-# Paid still gets strong priority, but a permanently full paid queue can no longer
-# starve trial users — the cohort whose experience drives conversion — forever.
-PAID_TO_TRIAL_RATIO = 4
-_dispatch_counter = 0
-
-
-def _queue_order():
-    """Which priority to check first this pass. Every (ratio+1)th pass looks at
-    TRIAL first; the rest look at PAID first. When only one queue has work it is
-    served regardless of order, so this only bites when both are backed up."""
-    global _dispatch_counter
-    _dispatch_counter += 1
-    if _dispatch_counter % (PAID_TO_TRIAL_RATIO + 1) == 0:
-        return (Priority.TRIAL, Priority.PAID)
-    return (Priority.PAID, Priority.TRIAL)
-
 
 async def worker_loop():
     logger.info("Started background transcription worker.")
@@ -178,16 +161,7 @@ async def worker_loop():
             else:
                 # Nothing in queues. Stamp a heartbeat so /health can tell the
                 # difference between "idle" and "the workers are dead".
-                #
-                # Throttled deliberately: the idle loop spins every 0.1s and there
-                # are WORKER_CONCURRENCY of them, so writing unconditionally here
-                # meant ~50 Redis SETs per second forever. /health only cares
-                # whether the stamp is fresher than 120s.
-                now = time.time()
-                global _last_heartbeat
-                if now - _last_heartbeat > HEARTBEAT_INTERVAL_SECONDS:
-                    _last_heartbeat = now
-                    await redis_client.set("worker:heartbeat", str(now), ex=300)
+                await redis_client.set("worker:heartbeat", str(time.time()), ex=300)
                 await asyncio.sleep(0.1)
                 
         except Exception as e:

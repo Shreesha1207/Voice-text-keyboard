@@ -486,7 +486,7 @@ class AuthHandler(BaseHTTPRequestHandler):
             except OSError as e:
                 logger.warning(f"Could not remove config on logout ping: {e}")
             self.send_response(200)
-            self._send_cors_origin()
+            self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
             self.wfile.write(b'{"status":"logged_out"}')
 
