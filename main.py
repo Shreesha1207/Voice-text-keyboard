@@ -809,39 +809,97 @@ def is_pressed(_):
     return hotkey_pressed
 
 def _paste_text(text):
-    """Clipboard-paste fallback (pyperclip + Ctrl+V). Plain text, not AI."""
+    """Insert text via the clipboard and Ctrl+V (Cmd+V on macOS).
+
+    Atomic from the target application's point of view: the whole string arrives in
+    one operation, so there is no per-character race to lose.
+
+    Raises on failure so the caller can fall back to keystroke typing.
+    """
     import pyperclip
+
     try:
         prev = pyperclip.paste() or ""
     except Exception:
         prev = ""
-    pyperclip.copy(text)
-    time.sleep(0.05)
+
+    # Put our text on the clipboard and CONFIRM it landed before pasting. If the
+    # copy silently failed, pasting would insert whatever was on the clipboard
+    # before — dumping unrelated content into the user's document, which is far
+    # worse than a dropped character. Retry briefly; some clipboard backends are
+    # slow to make a write visible.
+    placed = False
+    for _ in range(5):
+        pyperclip.copy(text)
+        time.sleep(0.03)
+        try:
+            if pyperclip.paste() == text:
+                placed = True
+                break
+        except Exception:
+            pass
+    if not placed:
+        raise RuntimeError("clipboard did not accept the text")
+
     ctrl = pk.Controller()
     mod = pk.Key.cmd if sys.platform == "darwin" else pk.Key.ctrl
     ctrl.press(mod); ctrl.press('v'); ctrl.release('v'); ctrl.release(mod)
-    time.sleep(0.15)
+
+    # Give the target app time to consume the paste before we put the old clipboard
+    # back. Restoring too early can make the app paste the PREVIOUS contents.
+    time.sleep(0.25)
     try:
         pyperclip.copy(prev)
     except Exception:
         pass
 
+
 def write_text(text):
-    """Primary: pynput keystroke typing. Fallback: clipboard paste, only if typing raises."""
-    try:
+    """Insert transcribed text into the focused application.
+
+    Clipboard paste is the primary path. pynput's type() sends one synthetic
+    keystroke per character, which races the target application's input queue —
+    busy apps, Electron apps, browsers and remote sessions silently drop characters,
+    producing exactly the "missing a letter in the middle of a word" symptom. A
+    paste is a single atomic operation and cannot be partially applied.
+
+    Note this was already the intent — there was a paste fallback here — but it only
+    triggered when type() raised an *exception*. Dropped characters raise nothing:
+    typing "succeeds" while quietly losing text, so the fallback never fired for the
+    one failure mode it was meant to cover.
+
+    Set XVOICE_INSERT_METHOD=type to force keystroke typing (useful in apps where
+    Ctrl+V is bound to something else, e.g. some terminals).
+    """
+    method = os.getenv("XVOICE_INSERT_METHOD", "paste").strip().lower()
+
+    if method == "type":
         pk.Controller().type(text)
+        return
+
+    try:
+        _paste_text(text)
     except Exception as e:
-        logger.warning(f"Keystroke typing failed ({e}); using clipboard paste.")
+        logger.warning(f"Clipboard paste failed ({e}); falling back to keystroke typing.")
         try:
-            _paste_text(text)
+            pk.Controller().type(text)
         except Exception as e2:
-            logger.error(f"Clipboard paste fallback also failed: {e2}")
+            logger.error(f"Keystroke typing fallback also failed: {e2}")
 
 try:
-    vad = webrtcvad.Vad(1)
+    # Mode 0 = least aggressive. The VAD no longer decides which audio to keep (see
+    # record_audio), only whether speech was present and where to trim, so the
+    # permissive setting is the right one: it errs toward calling quiet consonants
+    # speech, which keeps the trim boundaries safely wide.
+    vad = webrtcvad.Vad(0)
 except Exception as e:
     logger.error(f"webrtcvad failed to initialise: {e}. VAD disabled — all audio will be captured.")
     vad = None
+
+# Frames of audio kept either side of detected speech when trimming. CHUNK is 30 ms
+# at 16 kHz, so 10 frames ≈ 300 ms — enough to preserve a word's true onset, which
+# the VAD always reports slightly late.
+SILENCE_PAD_FRAMES = 10
 
 # ─────────────────────────────────────────────
 #   Audio pipeline
@@ -907,15 +965,38 @@ def record_audio(output_filename):
             time.sleep(0.1)
         return False
 
+    # Capture EVERY frame. The VAD result is recorded alongside, but is no longer
+    # used to decide what to keep.
+    #
+    # Previously only frames the VAD called "speech" were appended, and the
+    # survivors were concatenated. That did two damaging things:
+    #   1. Low-energy consonants (s, f, th, t, k, p) are routinely classified as
+    #      non-speech, so those frames were deleted — letters literally vanished
+    #      from the audio before it was ever transcribed.
+    #   2. Because dropped frames were removed rather than silenced, the remaining
+    #      audio was spliced together with abrupt discontinuities. Transcription
+    #      models are trained on continuous speech; splices are out-of-distribution
+    #      and cause merged or skipped words.
+    # Keeping the audio continuous is worth far more than the few KB the filtering
+    # saved.
     frames = []
+    speech_flags = []
     while is_pressed(HOTKEY):
         try:
             data = stream.read(CHUNK, exception_on_overflow=False)
-            if vad is None or vad.is_speech(data, RATE):
-                frames.append(data)
+            frames.append(data)
+            if vad is None:
+                speech_flags.append(True)
+            else:
+                try:
+                    speech_flags.append(vad.is_speech(data, RATE))
+                except Exception:
+                    # Treat an unreadable frame as speech — never drop audio.
+                    speech_flags.append(True)
         except IOError:
             pass
-    
+
+
     if winsound:
         winsound.Beep(800, 100)
     stream.stop_stream()
@@ -926,6 +1007,26 @@ def record_audio(output_filename):
     audio.terminate()
 
     if not frames:
+        return False
+
+    # The VAD's only remaining job: decide whether anything was said at all, so we
+    # don't upload pure silence, and trim the dead air at each end. The span between
+    # the first and last speech frame is kept intact — never gapped.
+    if any(speech_flags):
+        first = speech_flags.index(True)
+        last = len(speech_flags) - 1 - speech_flags[::-1].index(True)
+        # Keep generous padding around the speech: the VAD needs a frame or two to
+        # latch on, so the true onset of the first word sits before `first`.
+        start = max(0, first - SILENCE_PAD_FRAMES)
+        end = min(len(frames), last + 1 + SILENCE_PAD_FRAMES)
+        frames = frames[start:end]
+        logger.debug(
+            f"Captured {len(speech_flags)} frames, kept {len(frames)} "
+            f"(speech {first}-{last}, {SILENCE_PAD_FRAMES}-frame pad)"
+        )
+    else:
+        # No speech detected anywhere — almost certainly a mis-tap.
+        logger.info("No speech detected in recording; skipping upload.")
         return False
 
     with wave.open(output_filename, 'wb') as wf:
