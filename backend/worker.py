@@ -17,11 +17,6 @@ redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
 logger = logging.getLogger(__name__)
 
-# Worker liveness stamp for /health. Written at most this often across all workers;
-# /health treats anything fresher than 120s as alive.
-HEARTBEAT_INTERVAL_SECONDS = 15
-_last_heartbeat = 0.0
-
 async def process_transcription(job: dict) -> dict:
     start_t = time.time()
     filepath = job.get("filepath")
@@ -138,12 +133,13 @@ async def worker_loop():
     logger.info("Started background transcription worker.")
     while True:
         try:
-            job_data = None
-            for priority in _queue_order():
-                job_data = await redis_client.lpop(f"queue:{priority.name.lower()}")
-                if job_data:
-                    break
-
+            # Check PAID queue first
+            job_data = await redis_client.lpop(f"queue:{Priority.PAID.name.lower()}")
+            
+            if not job_data:
+                # If PAID is empty, check TRIAL
+                job_data = await redis_client.lpop(f"queue:{Priority.TRIAL.name.lower()}")
+                
             if job_data:
                 job = json.loads(job_data)
                 job_id = job["job_id"]

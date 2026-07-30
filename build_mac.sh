@@ -77,6 +77,21 @@ else
 fi
 echo
 
+# ─────────────────────────────────────────────────────────────────────────
+#  [2/7] webrtcvad metadata (PyInstaller compatibility patch)
+# ─────────────────────────────────────────────────────────────────────────
+echo "[2/7] Fixing webrtcvad metadata (PyInstaller compatibility patch)..."
+SITEPACKAGES="$("$PY" -c "import site, sys; dirs = site.getsitepackages() + [site.getusersitepackages()]; sp = next((d for d in dirs if 'site-packages' in d), dirs[-1]); print(sp)")"
+DISTINFO="$SITEPACKAGES/webrtcvad-2.0.14.dist-info"
+if [[ ! -d "$DISTINFO" ]]; then
+    mkdir -p "$DISTINFO"
+    printf 'Metadata-Version: 2.1\nName: webrtcvad\nVersion: 2.0.14\n' > "$DISTINFO/METADATA"
+    printf 'pip\n' > "$DISTINFO/INSTALLER"
+    echo "  Created webrtcvad stub metadata at $DISTINFO"
+else
+    echo "  Stub already exists, skipping."
+fi
+echo
 
 # ─────────────────────────────────────────────────────────────────────────
 #  [3/7] App icon

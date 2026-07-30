@@ -22,6 +22,9 @@ class WritingEngine:
         self.overlay_manager = OverlayManager(self)
         self.mouse_listener = None
         self._running = False
+        self._left_press_pos = (0, 0)   # where the left button went down (drag detection)
+        self._cached_selected_text = None
+        self._cached_prev_clipboard = None
         self._last_click_x = 100
         self._last_click_y = 100
 
@@ -29,7 +32,6 @@ class WritingEngine:
         self._auto_replace   = False   # True → replace immediately, no preview
         self._show_preview   = True    # True → show VS Code-style preview widget
         self._default_language = "en"
-        self._prefs_initialized = False
 
     def start(self):
         if self._running:
@@ -48,15 +50,12 @@ class WritingEngine:
         """Fetch writing preferences from the backend and cache them."""
         prefs = self.backend_client.get_preferences()
         if prefs:
-            new_auto = prefs.get("auto_replace", self._auto_replace)
-            new_preview = prefs.get("show_preview", self._show_preview)
-            new_lang = prefs.get("default_language", self._default_language)
-
-            changed = (
-                not self._prefs_initialized
-                or new_auto != self._auto_replace
-                or new_preview != self._show_preview
-                or new_lang != self._default_language
+            self._auto_replace    = prefs.get("auto_replace",    self._auto_replace)
+            self._show_preview    = prefs.get("show_preview",    self._show_preview)
+            self._default_language = prefs.get("default_language", self._default_language)
+            logger.info(
+                f"Writing prefs loaded: auto_replace={self._auto_replace}, "
+                f"show_preview={self._show_preview}, lang={self._default_language}"
             )
 
     # Polling every 5s was ~17,000 authenticated requests per user per day — a JWT
@@ -82,6 +81,7 @@ class WritingEngine:
     def _on_click(self, x, y, button, pressed):
         if button == mouse.Button.left:
             if pressed:
+                self._left_press_pos = (x, y)
                 # Detect a click on the Xvoice button via the GLOBAL hook, so it
                 # works even while a native context menu is grabbing the mouse
                 # (in which case Qt never receives the click on our overlay).
@@ -89,11 +89,18 @@ class WritingEngine:
                     self.on_xvoice_click(x, y)
                     return
             else:
-                # Releasing a left click — including after a drag — deliberately
-                # does NOT offer the button. Selecting text is not a request to do
-                # anything; the user asks for Xvoice by right-clicking. This keeps
-                # the app completely inert while you are just selecting or editing.
-                self.overlay_manager.on_left_click(x, y)
+                px, py = self._left_press_pos
+                dragged = (abs(x - px) + abs(y - py)) > 10
+                if dragged:
+                    # Highlight-drag → offer the Xvoice button near the cursor.
+                    threading.Thread(
+                        target=self._capture_selection_and_show,
+                        args=(x, y),
+                        daemon=True,
+                    ).start()
+                else:
+                    # A plain click dismisses the button (unless it landed on it).
+                    self.overlay_manager.on_left_click(x, y)
             return
 
         # Right-click also offers the button (the app's own menu still opens, but
@@ -116,30 +123,24 @@ class WritingEngine:
             self._cached_selected_text = selected_text
             self._cached_prev_clipboard = prev_clipboard
             self.overlay_manager.show_xvoice_button(x, y)
+        else:
+            self._cached_selected_text = None
+            self._cached_prev_clipboard = None
 
     def on_xvoice_click(self, x, y):
-        """Called when the user clicks the floating Xvoice button.
+        """Called when the user clicks the floating Xvoice button."""
+        selected_text = self._cached_selected_text
+        prev_clipboard = self._cached_prev_clipboard
 
-        This — and only this — is where the selection is copied. The copy runs in a
-        background thread because it sends real keystrokes (Ctrl+C) with short
-        sleeps, which must not block the mouse-listener callback."""
+        if not selected_text or selected_text.strip() == "":
+            self.overlay_manager.hide_all()
+            return
+
         self._last_click_x = x
         self._last_click_y = y
-
-        def _capture_and_open():
-            from writing import selection
-            selected_text, prev_clipboard = selection.get_selected_text_and_restore()
-            if not selected_text or not selected_text.strip():
-                # Nothing was actually selected (e.g. the button appeared after a
-                # drag that selected no text). Just dismiss.
-                self.overlay_manager.hide_all()
-                return
-            self.overlay_manager.cmd_queue.put(
-                ('show_action', (self._last_click_x, self._last_click_y,
-                                 selected_text, prev_clipboard))
-            )
-
-        threading.Thread(target=_capture_and_open, daemon=True).start()
+        self._cached_selected_text = None
+        self._cached_prev_clipboard = None
+        self.overlay_manager.cmd_queue.put(('show_action', (x, y, selected_text, prev_clipboard)))
 
     def trigger_action(self, action: str, target_language: str | None,
                        selected_text: str, prev_clipboard: str):

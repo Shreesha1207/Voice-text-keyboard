@@ -190,6 +190,7 @@ def check_python_deps():
         "pyaudio": "microphone capture",
         "pynput": "F8 hotkey + typing",
         "pystray": "menu-bar icon",
+        "webrtcvad": "silence trimming",
         "PIL": "icon drawing",
         "requests": "backend calls",
         "pyperclip": "clipboard paste (Writing engine imports this at module scope)",
