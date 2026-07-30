@@ -1,149 +1,149 @@
-# 🎙️ Voice-Text Keyboard
+# 🎙️ Xvoice
 
-A lightweight background utility that lets you **dictate text anywhere** using a hotkey. Hold **F8**, speak, release — your words are instantly typed into whatever app is in focus.
+Two tools in one lightweight background app:
 
-Supports **English spoken in any accent** (Indian, American, Australian, British, French, German, Dutch, and more).
+- **Dictation** — hold a hotkey, speak, release. Your words are transcribed and typed into whatever app is focused.
+- **Writing** — select any text on screen, click the floating **Xvoice** button, and rewrite, translate, shorten, summarise, or fix its grammar in place.
+
+Dictation works in **English across accents** (Indian, American, Australian, British, French, German, Dutch, and more). Writing works on any text you can select.
+
+> **Hosted service.** You sign in through your browser — you do **not** need your own OpenAI API key. Transcription and rewriting run on the Xvoice backend. Manage your account at **[xvoicekeyboard.com](https://xvoicekeyboard.com)**.
 
 ---
 
 ## ✨ Features
 
-- 🔴 **Push-to-talk** — Hold `F8` to record, release to transcribe
-- 🌍 **Accent-aware** — Works with all English accents out of the box
-- 🔇 **Smart noise filtering** — WebRTC VAD removes silence and background noise before sending audio to the API
-- 🔊 **Audio normalization** — FFmpeg lightly normalizes volume for optimal AI clarity
-- 🤖 **Auto-types the result** — Transcribed text is typed directly into your active window
-- 🔔 **Audio feedback** — Beeps signal recording start, stop, and success
-- 🚀 **Runs on startup** — Automatically launches invisibly in the background on boot
+- 🔴 **Push-to-talk dictation** — hold `F8` (customisable on Pro) to record, release to transcribe
+- ✍️ **In-place AI writing** — improve, translate, shorten, summarise, fix grammar, and more, on any selected text
+- 🌍 **Accent-aware** — works with English accents out of the box
+- 🔇 **Smart noise filtering** — WebRTC VAD removes silence and background noise before audio leaves your machine
+- 🔊 **Audio normalization** — FFmpeg normalises volume for clearer transcription
+- 🔔 **Audio feedback** — beeps signal recording start, stop, and success
+- 🚀 **Runs on startup** — launches invisibly in the background at login
+- 🔐 **Browser sign-in** — no API keys to manage; log out from all devices with one click
 
 ---
 
-## 📋 Requirements
+## 📦 Install (recommended)
 
-- **Python 3.8+**
-- **FFmpeg** — must be placed in the project root as `ffmpeg.exe` (or added to system PATH)
-- **OpenAI API Key**
-
-### Python Dependencies
-
-```
-pyaudio
-pynput
-webrtcvad-wheels
-openai
-python-dotenv
-pyinstaller
-```
-
----
-
-## ⚙️ Setup
-
-### 1. Clone / Download the project
-
-```
-git clone https://github.com/your-username/Voice-text-keyboard.git
-cd Voice-text-keyboard
-```
-
-### 2. Add your OpenAI API Key
-
-Create a `.env` file in the project root:
-
-```env
-OPENAI_API_KEY=sk-your-key-here
-```
-
-### 3. Run Setup
-
-**Windows** — double-click **`setup.bat`** or run it from a terminal:
-
-```bat
-setup.bat
-```
-
-**macOS** — double-click **`setup_mac.command`** or run it from a terminal:
-
-```bash
-./setup_mac.command
-```
-
-**Linux** — run **`setup_mac_linux.sh`**:
-
-```bash
-./setup_mac_linux.sh
-```
-
-Each of these will:
-1. Install the system prerequisites (ffmpeg, portaudio) and Python dependencies
-2. Register the app to launch automatically at login
-   (Windows Startup folder / macOS LaunchAgent)
-3. Launch the app immediately in the background (no console window)
-
----
-
-## 📦 Installing the packaged app
-
-Prebuilt downloads are published on the [Releases page](../../releases) — no
-Python required.
+Prebuilt downloads are on **[xvoicekeyboard.com/download](https://xvoicekeyboard.com/download)** and the [Releases page](../../releases) — no Python required.
 
 | Platform | Download | How to install |
 |---|---|---|
-| 🪟 Windows | `xvoice.exe` / `XVoiceSetup.exe` | Double-click to run |
+| 🪟 Windows | `XVoiceSetup.exe` | Double-click to run. If SmartScreen warns, **More info → Run anyway**. |
 | 🍎 macOS (Apple Silicon) | **`Xvoice-arm64.pkg`** ← recommended | Double-click and click through — install, launch-at-login and first launch are all automatic |
 | 🍎 macOS (Intel) | **`Xvoice-x86_64.pkg`** ← recommended | Same as above |
 | 🍎 macOS (drag-install) | `Xvoice-<arch>.dmg` | Drag **Xvoice** into **Applications** → run **First Run.command** |
 | 🐧 Linux | `Xvoice-x86_64.AppImage` | `chmod +x Xvoice-x86_64.AppImage && ./Xvoice-x86_64.AppImage` |
 
-Not sure which Mac you have?  → About This Mac. "Apple M1/M2/M3/M4" is
-**arm64**, "Intel" is **x86_64**. They are not interchangeable — PyInstaller
-freezes per-architecture, and the wrong one simply will not open.
+On first launch the app opens your browser to link your Xvoice account. After that it lives in the system tray / menu bar and starts with your computer.
+
+Not sure which Mac you have? → About This Mac. "Apple M1/M2/M3/M4" is **arm64**, "Intel" is **x86_64**. They are not interchangeable — PyInstaller freezes per-architecture, and the wrong one will not open.
 
 > ### ⚠️ Xvoice has no Dock icon on macOS
 >
-> It is a **menu-bar app** — the purple microphone at the **top-right of your
-> screen**, next to the clock. That is the same role the system tray plays on
-> Windows, and it is deliberate (`LSUIElement`).
+> It is a **menu-bar app** — the purple microphone at the **top-right of your screen**, next to the clock. That is the same role the system tray plays on Windows, and it is deliberate (`LSUIElement`).
 >
-> If you installed it and "nothing happened", it is almost certainly running
-> up there. Confirm with `pgrep -fl Xvoice`.
->
-> macOS silently hides menu-bar icons when the bar runs out of room — common
-> on laptops with a notch — and offers no overflow chevron like Windows does.
+> If you installed it and "nothing happened", it is almost certainly running up there. Confirm with `pgrep -fl Xvoice`.
 
-**Something not working?** Run the diagnostic:
+**Something not working on macOS?** Run the diagnostic:
 
 ```bash
 python3 mac/preflight.py
 ```
 
-It checks architecture match, quarantine, signature, `Info.plist`, every
-Python dependency and the permission state, and prints the exact fix for
-whatever failed. See [`MACOS_NOTES.md`](MACOS_NOTES.md) for the full
-breakdown — including one **known open issue** with the Qt overlay on macOS.
+It checks architecture match, quarantine, signature, `Info.plist`, every Python dependency and the permission state, and prints the exact fix. See [`MACOS_NOTES.md`](MACOS_NOTES.md) for the full breakdown, including one **known open issue** with the Qt overlay on macOS.
 
 ### macOS permissions
 
-Xvoice is a menu-bar app (no Dock icon) and needs three permissions macOS
-gates behind Privacy & Security. **First Run.command** in the DMG opens all
-three panes for you:
+Xvoice needs three permissions macOS gates behind Privacy & Security. **First Run.command** in the DMG opens all three panes for you:
 
 | Permission | Why | Where |
 |---|---|---|
 | **Microphone** | To hear you | Prompted automatically on first `F8` |
-| **Accessibility** | To type the transcribed text into other apps | Privacy & Security → Accessibility |
+| **Accessibility** | To type transcribed text into other apps | Privacy & Security → Accessibility |
 | **Input Monitoring** | To notice `F8` while another app is in front | Privacy & Security → Input Monitoring |
 
-Xvoice only appears in the Accessibility / Input Monitoring lists **after**
-it has been launched once. After you switch either one on, restart Xvoice
-(menu-bar icon → *Refresh / Restart*) — macOS only hands a new permission to
-a freshly started process.
+Xvoice only appears in the Accessibility / Input Monitoring lists **after** it has been launched once. After switching either on, restart Xvoice (menu-bar icon → *Refresh / Restart*) — macOS only hands a new permission to a freshly started process.
 
-> **"Xvoice is damaged and can't be opened"** — the build is not notarized
-> yet, so macOS quarantines it. `First Run.command` clears that, or run:
+> **"Xvoice is damaged and can't be opened"** — the build is not notarized yet, so macOS quarantines it. `First Run.command` clears that, or run:
 > ```bash
 > xattr -dr com.apple.quarantine /Applications/Xvoice.app
 > ```
+
+---
+
+## 🗣️ Using Dictation
+
+| Action | Result |
+|---|---|
+| **Hold `F8`** | Recording starts (high beep 🔔) |
+| **Speak** | Talk naturally in English — any accent |
+| **Release `F8`** | Recording stops (low beep 🔕), transcription begins |
+| **Wait ~1–2 s** | Text is typed into your active window ✅ |
+
+Works anywhere text input does — browsers, Word, Notepad, chat, email, editors. **Pro** users can change the push-to-talk key and pick a transcription language from the dashboard.
+
+---
+
+## ✍️ Using Writing
+
+1. **Select** some text in any app.
+2. **Click** the floating **Xvoice** button that appears (or right-click after selecting, then click it).
+3. **Choose an action** — Improve, Professional, Shorten, Expand, Translate, Summarise, Fix grammar, and more.
+4. The result is shown as a preview you can accept, or replaces the selection directly — your choice in settings.
+
+Nothing is copied from your screen until you click the Xvoice button — a stray selection, or a right-click on its own, never touches your clipboard.
+
+---
+
+## 🔑 Account, trials & Pro
+
+- Sign in once through the browser; the app stays linked until you log out.
+- **Dictation** and **Writing** each have a free trial. Upgrade to **Pro** for either, or the **Platform** bundle for both, on the billing dashboard.
+- **Log out from all devices** with one click — it invalidates every active session immediately.
+
+You do **not** supply an OpenAI key. The desktop app sends audio and text to the Xvoice backend, which holds the key server-side. Your login is stored locally in a private, owner-only file:
+
+| Platform | Config |
+|---|---|
+| Windows | `%LOCALAPPDATA%\Xvoice\config.json` |
+| macOS | `~/Library/Application Support/Xvoice/config.json` |
+| Linux | `~/.config/Xvoice/config.json` |
+
+---
+
+## 🩺 Logs & troubleshooting
+
+If something misbehaves, the log file helps (the tray menu can open or export it):
+
+| Platform | Log file |
+|---|---|
+| Windows | `%LOCALAPPDATA%\Xvoice\xvoice.log` |
+| macOS | `~/Library/Logs/Xvoice/xvoice.log` |
+| Linux | `~/.local/share/Xvoice/logs/xvoice.log` |
+
+Set `XVOICE_LOG_LEVEL=DEBUG` for verbose logging without rebuilding. **Nothing you dictate or rewrite is written to these logs** — only lengths and status, never content.
+
+---
+
+## 🧠 How it works
+
+```
+Hold F8
+   ↓
+PyAudio captures mic input in 30 ms frames
+   ↓
+WebRTC VAD drops silence and background noise (only speech frames kept)
+   ↓
+FFmpeg normalises the volume (loudnorm)
+   ↓
+Audio is sent to the Xvoice backend, which transcribes it and returns text
+   ↓
+Text is typed at the cursor via pynput
+```
+
+The backend runs the transcription (OpenAI `gpt-4o-transcribe`) and the Writing rewrites (`gpt-4o`) with the API key held server-side — the desktop app never sees it. Writing input is treated strictly as data, never as instructions, on the server.
 
 ---
 
@@ -155,8 +155,7 @@ a freshly started process.
 | 🍎 macOS | `./build_mac.sh` → `dist/Xvoice.app` | `./installer_mac_pkg.sh` → `.pkg` (wizard) or `./installer_mac.sh` → `.dmg` (drag) |
 | 🐧 Linux | `pyinstaller --noconfirm xvoice.spec` → `dist/xvoice` | See the `build-linux` job in `.github/workflows/build.yml` |
 
-All three share the same `xvoice.spec`. Pushing a `v*` tag builds and
-publishes every platform automatically via GitHub Actions.
+All three share the same `xvoice.spec`; the version comes from `APP_VERSION` in that file (kept in step with `__version__` in `main.py` and `MyAppVersion` in `installer.iss`). Pushing a `v*` tag builds and publishes every platform via GitHub Actions.
 
 **Optional macOS signing** (removes the Gatekeeper warning entirely):
 
@@ -168,95 +167,75 @@ export XVOICE_NOTARY_PROFILE="xvoice-notary"   # see installer_mac.sh
 
 ---
 
-## 🎮 Usage
+## 🛠️ Running from source (developers)
 
-Once running:
+**Desktop app**
 
-| Action | Result |
+```bash
+# Windows
+setup.bat
+# macOS
+./setup_mac.command
+# Linux
+./setup_mac_linux.sh
+```
+
+Each installs the system prerequisites (FFmpeg, PortAudio) and the Python dependencies in `requirements.txt`, registers the app to launch at login, and starts it in the background. Point it at your own backend by editing `RAILWAY_URL` / `FRONTEND_URL` at the top of `main.py`.
+
+**Backend** (FastAPI, in `backend/`)
+
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn main:app --reload
+```
+
+It reads its configuration from the environment:
+
+| Variable | Purpose |
 |---|---|
-| **Hold `F8`** | Starts recording (you'll hear a high beep 🔔) |
-| **Speak** | Talk naturally in English — any accent |
-| **Release `F8`** | Stops recording (low beep 🔕), transcription begins |
-| **Wait ~1–2 sec** | Text is auto-typed into your active window ✅ |
+| `JWT_SECRET_KEY` | **Required** — signs auth tokens; the app refuses to start without it |
+| `OPENAI_API_KEY` | Server-side transcription and rewriting |
+| `DATABASE_URL` | PostgreSQL |
+| `REDIS_URL` | Transcription queue + rate limiting |
+| `STRIPE_SECRET_KEY` | Billing portal |
+| `LOVABLE_SYNC_SECRET` | Verifies the subscription-sync webhook |
+| `EMAIL_WEBHOOK_SECRET` | Transactional email delivery |
 
-> The app runs invisibly in the background. You can use it in any app — browsers, Word, Notepad, chat apps, etc.
-
----
-
-## 🛠️ Configuration
-
-All settings are at the top of `main.py`:
-
-| Constant | Default | Description |
-|---|---|---|
-| `HOTKEY` | `'f8'` | Push-to-talk key |
-| `RATE` | `16000` | Audio sample rate (Hz) — required by WebRTC VAD |
-| `CHUNK` | `480` | Audio frame size (30ms at 16kHz) |
-| `RAW_FILE` | `temp_raw.wav` | Temp file for raw recorded audio |
-| `NORM_FILE` | `temp_norm.wav` | Temp file for normalized audio |
-
-To change the hotkey to e.g. `F9`, edit:
-```python
-HOTKEY = 'f9'
-```
+The web dashboard (React) is managed separately and is not in this repository.
 
 ---
 
-## 🧠 How It Works
-
-```
-Hold F8
-   ↓
-PyAudio captures mic input in 30ms chunks
-   ↓
-WebRTC VAD filters out silence and noise (only speech frames kept)
-   ↓
-FFmpeg normalizes audio volume (loudnorm filter)
-   ↓
-Audio sent to OpenAI gpt-4o-transcribe (Whisper API)
-   with accent-aware prompt for best accuracy
-   ↓
-Transcribed text auto-typed at cursor via pynput
-```
-
-### Accent Support
-
-The transcription API call includes a `prompt` that informs the model the speaker may have an Indian, American, Australian, British, French, German, Dutch, or other English accent. Combined with `webrtcvad.Vad(0)` (least aggressive VAD mode) to avoid clipping speech patterns with different cadence, this gives the best accuracy across accents.
-
----
-
-## 📁 Project Structure
+## 📁 Project structure
 
 ```
 Voice-text-keyboard/
-├── main.py                 # Main app logic
-├── writing/                # Writing engine (Qt overlay, actions, backend client)
-├── backend/                # API service
-├── requirements.txt        # Python dependencies
+├── main.py                 # Desktop app: tray, hotkey, recording, auth handshake
+├── writing/                # Writing engine (selection capture, Qt overlay, actions)
+├── backend/                # FastAPI service (deployed to Railway)
+│   ├── main.py             #   app, CORS, startup
+│   ├── routers/            #   auth, stats, billing, transcribe, writing, achievements
+│   ├── rate_limit.py       #   Redis-backed rate limiting
+│   ├── audit.py            #   security / billing audit trail
+│   ├── worker.py           #   background transcription workers
+│   └── queue_manager.py
+├── requirements.txt        # Desktop Python dependencies
 ├── xvoice.spec             # Shared PyInstaller spec (Windows / macOS / Linux)
 │
 ├── setup.bat               # Windows: run-from-source setup & launcher
 ├── build_exe.bat           # Windows: build dist\xvoice.exe
 ├── installer.iss           # Windows: Inno Setup script -> XVoiceSetup.exe
-├── ffmpeg.exe              # Windows FFmpeg binary
+├── ffmpeg.exe              # Windows FFmpeg binary (fetched for builds)
 │
 ├── setup_mac.command       # macOS: run-from-source setup & launcher
 ├── build_mac.sh            # macOS: build dist/Xvoice.app
 ├── installer_mac.sh        # macOS: build the .dmg (drag-install)
 ├── installer_mac_pkg.sh    # macOS: build the .pkg (wizard + auto-setup)
 ├── MACOS_NOTES.md          # macOS gotchas, signing, and the open Qt issue
-├── mac/
-│   ├── preflight.py                     # Diagnostic: why isn't it working?
-│   ├── make_icns.py                     # Generates the app icon
-│   ├── entitlements.plist               # Hardened-runtime entitlements
-│   ├── com.xvoicekeyboard.xvoice.plist  # LaunchAgent template (login start)
-│   ├── pkg-scripts/postinstall          # .pkg: quarantine + agent + launch
-│   ├── first-run.command                # Ships in the DMG: permissions + launch
-│   └── dmg-readme.txt                   # Ships in the DMG as "Read Me.txt"
+├── mac/                    # macOS packaging assets (preflight, entitlements, agent…)
 │
 ├── setup_mac_linux.sh      # Linux (and bare-bones macOS) source setup
-├── .env                    # Your API key (not committed)
-└── README.md               # This file
+└── .github/workflows/      # CI: builds installers on v* tags
 ```
 
 ### Windows ↔ macOS equivalents
@@ -265,24 +244,18 @@ Voice-text-keyboard/
 |---|---|---|
 | `setup.bat` | `setup_mac.command` | Install deps, register at login, launch from source |
 | `build_exe.bat` | `build_mac.sh` | Freeze with PyInstaller |
-| `installer.iss` (Inno Setup) | `installer_mac_pkg.sh` (`.pkg`) | Wizard-style installer that runs setup logic |
+| `installer.iss` (Inno Setup) | `installer_mac_pkg.sh` (`.pkg`) | Wizard-style installer |
 | — | `installer_mac.sh` (`.dmg`) | Drag-to-Applications alternative |
 | `xvoice.exe` | `Xvoice.app` | The application |
 | `XVoiceSetup.exe` | `Xvoice-<ver>-<arch>.pkg` | What users download |
-| Authenticode signing | Developer ID + **notarization** | What stops the "unknown publisher" warning |
-| `HKCU\...\Run` registry value | `~/Library/LaunchAgents/com.xvoicekeyboard.xvoice.plist` | Start at login |
+| Authenticode signing | Developer ID + **notarization** | Stops the "unknown publisher" warning |
+| `HKCU\...\Run` value | `~/Library/LaunchAgents/com.xvoicekeyboard.xvoice.plist` | Start at login |
 | System tray icon | Menu-bar icon (`LSUIElement`) | Background UI |
 | `%LOCALAPPDATA%\Xvoice` | `~/Library/Application Support/Xvoice` | Token / config storage |
 | `%LOCALAPPDATA%\Xvoice` | `~/Library/Logs/Xvoice` | Logs |
 
 ---
 
-## 🔑 API Key Distribution
-
-If sharing the `.exe` with others, each user must provide their own `OPENAI_API_KEY`. On first launch, the app reads the key from the `.env` file located in the same directory as `main.py` / the `.exe`.
-
----
-
 ## 📄 License
 
-MIT — free to use and modify.
+MIT — see [LICENSE](LICENSE). Redistributed FFmpeg binaries are covered by their own LGPL/GPL terms.
