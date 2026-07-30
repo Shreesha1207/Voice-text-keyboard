@@ -129,17 +129,34 @@ async def process_transcription(job: dict) -> dict:
          result["error"] = "transcription_failed"
     return result
 
+# Serve roughly this many paid jobs for every trial job when both queues are busy.
+# Paid still gets strong priority, but a permanently full paid queue can no longer
+# starve trial users — the cohort whose experience drives conversion — forever.
+PAID_TO_TRIAL_RATIO = 4
+_dispatch_counter = 0
+
+
+def _queue_order():
+    """Which priority to check first this pass. Every (ratio+1)th pass looks at
+    TRIAL first; the rest look at PAID first. When only one queue has work it is
+    served regardless of order, so this only bites when both are backed up."""
+    global _dispatch_counter
+    _dispatch_counter += 1
+    if _dispatch_counter % (PAID_TO_TRIAL_RATIO + 1) == 0:
+        return (Priority.TRIAL, Priority.PAID)
+    return (Priority.PAID, Priority.TRIAL)
+
+
 async def worker_loop():
     logger.info("Started background transcription worker.")
     while True:
         try:
-            # Check PAID queue first
-            job_data = await redis_client.lpop(f"queue:{Priority.PAID.name.lower()}")
-            
-            if not job_data:
-                # If PAID is empty, check TRIAL
-                job_data = await redis_client.lpop(f"queue:{Priority.TRIAL.name.lower()}")
-                
+            job_data = None
+            for priority in _queue_order():
+                job_data = await redis_client.lpop(f"queue:{priority.name.lower()}")
+                if job_data:
+                    break
+
             if job_data:
                 job = json.loads(job_data)
                 job_id = job["job_id"]

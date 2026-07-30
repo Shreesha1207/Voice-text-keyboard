@@ -11,6 +11,8 @@ import threading
 import webbrowser
 import socket
 import tempfile
+import secrets
+import hmac
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import requests
 import pystray
@@ -48,6 +50,11 @@ else:  # Linux
 CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
 
 auth_success = False
+# CSRF guard for the local login callback. The desktop generates this before
+# opening the browser and only accepts a /auth POST that echoes it back. Without
+# it, ANY web page open in the browser could POST a token to 127.0.0.1:45678/auth
+# and silently bind this app to the attacker's account.
+_expected_state: str | None = None
 tray_icon = None
 PREFERRED_LANGUAGE = "en"
 IS_TRANSLATION_ENABLED = False
@@ -407,10 +414,30 @@ def save_token(access_token, refresh_token=None):
 #   Magic Auth (one-time browser login)
 # ─────────────────────────────────────────────
 
+# Only these origins may talk to the local login server. The connect-desktop page
+# is served from the production domain; nothing else has any business here.
+_ALLOWED_LOGIN_ORIGINS = {
+    "https://xvoicekeyboard.com",
+    "https://www.xvoicekeyboard.com",
+}
+
+
 class AuthHandler(BaseHTTPRequestHandler):
+    def _send_cors_origin(self):
+        """Echo the request Origin only if it is allow-listed.
+
+        A wildcard here let any site read our responses; combined with the missing
+        state check it was the whole vulnerability. We now reflect only known-good
+        origins, and fall back to the production domain for same-origin/no-Origin
+        callers (e.g. the desktop itself).
+        """
+        origin = self.headers.get('Origin')
+        allowed = origin if origin in _ALLOWED_LOGIN_ORIGINS else "https://xvoicekeyboard.com"
+        self.send_header('Access-Control-Allow-Origin', allowed)
+
     def do_OPTIONS(self):
         self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self._send_cors_origin()
         self.send_header('Access-Control-Allow-Methods', 'POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
@@ -421,16 +448,30 @@ class AuthHandler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length).decode('utf-8'))
             token = data.get('token')
             refresh = data.get('refresh_token')   # optional; sent by some frontend versions
+            state = data.get('state', '')
+
+            # CSRF check: the callback must echo the random state we minted before
+            # opening the browser. A malicious page cannot guess it, so it cannot
+            # complete the login even though it can reach this port.
+            if not _expected_state or not hmac.compare_digest(str(state), _expected_state):
+                logger.warning("Rejected /auth callback: state mismatch (possible CSRF).")
+                self.send_response(403)
+                self._send_cors_origin()
+                self.end_headers()
+                self.wfile.write(b'{"status":"forbidden"}')
+                return
+
             if token:
                 save_token(token, refresh)
                 self.send_response(200)
-                self.send_header('Access-Control-Allow-Origin', '*')
+                self._send_cors_origin()
                 self.end_headers()
                 self.wfile.write(b'{"status":"success"}')
                 global auth_success
                 auth_success = True
             else:
                 self.send_response(400)
+                self._send_cors_origin()
                 self.end_headers()
 
         elif self.path == '/logout':
@@ -445,7 +486,7 @@ class AuthHandler(BaseHTTPRequestHandler):
             except OSError as e:
                 logger.warning(f"Could not remove config on logout ping: {e}")
             self.send_response(200)
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self._send_cors_origin()
             self.end_headers()
             self.wfile.write(b'{"status":"logged_out"}')
 
@@ -589,7 +630,12 @@ def require_auth():
         "Sign in required — check your browser to reconnect.",
         "Xvoice"
     )
-    webbrowser.open(f"{FRONTEND_URL}/connect-desktop")
+    # Mint a fresh CSRF state for this login attempt and pass it to the browser.
+    # The connect-desktop page echoes it back in the /auth POST; do_POST rejects any
+    # callback that does not match.
+    global _expected_state
+    _expected_state = secrets.token_urlsafe(24)
+    webbrowser.open(f"{FRONTEND_URL}/connect-desktop?state={_expected_state}")
 
     server = HTTPServer(('127.0.0.1', LOCAL_PORT), AuthHandler)
     server.timeout = 1
