@@ -39,8 +39,8 @@ class WritingEngine:
         # silently on every selection.
         from writing import clipboard
         clipboard.check_available()
-        # Load preferences in background and keep syncing so webapp changes reflect instantly
-        threading.Thread(target=self._preference_polling_loop, daemon=True).start()
+        # Load preferences once at startup
+        threading.Thread(target=self._load_preferences, daemon=True).start()
         self.mouse_listener = mouse.Listener(on_click=self._on_click)
         self.mouse_listener.start()
 
@@ -48,34 +48,13 @@ class WritingEngine:
         """Fetch writing preferences from the backend and cache them."""
         prefs = self.backend_client.get_preferences()
         if prefs:
-            new_auto = prefs.get("auto_replace", self._auto_replace)
-            new_preview = prefs.get("show_preview", self._show_preview)
-            new_lang = prefs.get("default_language", self._default_language)
-
-            changed = (
-                not self._prefs_initialized
-                or new_auto != self._auto_replace
-                or new_preview != self._show_preview
-                or new_lang != self._default_language
+            self._auto_replace = prefs.get("auto_replace", self._auto_replace)
+            self._show_preview = prefs.get("show_preview", self._show_preview)
+            self._default_language = prefs.get("default_language", self._default_language)
+            logger.info(
+                f"Writing prefs loaded: auto_replace={self._auto_replace}, "
+                f"show_preview={self._show_preview}, lang={self._default_language}"
             )
-
-            self._auto_replace = new_auto
-            self._show_preview = new_preview
-            self._default_language = new_lang
-
-            if changed:
-                self._prefs_initialized = True
-                logger.info(
-                    f"Writing prefs loaded: auto_replace={self._auto_replace}, "
-                    f"show_preview={self._show_preview}, lang={self._default_language}"
-                )
-
-    PREFERENCE_POLL_SECONDS = 3600
-
-    def _preference_polling_loop(self):
-        while self._running:
-            self._load_preferences()
-            time.sleep(self.PREFERENCE_POLL_SECONDS)
 
     def refresh_preferences(self):
         """Called externally (e.g. after user saves settings) to reload prefs."""
