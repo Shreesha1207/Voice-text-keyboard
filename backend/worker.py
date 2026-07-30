@@ -17,6 +17,11 @@ redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
 logger = logging.getLogger(__name__)
 
+# Worker liveness stamp for /health. Written at most this often across all workers;
+# /health treats anything fresher than 120s as alive.
+HEARTBEAT_INTERVAL_SECONDS = 15
+_last_heartbeat = 0.0
+
 async def process_transcription(job: dict) -> dict:
     start_t = time.time()
     filepath = job.get("filepath")
@@ -174,7 +179,16 @@ async def worker_loop():
             else:
                 # Nothing in queues. Stamp a heartbeat so /health can tell the
                 # difference between "idle" and "the workers are dead".
-                await redis_client.set("worker:heartbeat", str(time.time()), ex=300)
+                #
+                # Throttled deliberately: the idle loop spins every 0.1s and there
+                # are WORKER_CONCURRENCY of them, so writing unconditionally here
+                # meant ~50 Redis SETs per second forever. /health only cares
+                # whether the stamp is fresher than 120s.
+                now = time.time()
+                global _last_heartbeat
+                if now - _last_heartbeat > HEARTBEAT_INTERVAL_SECONDS:
+                    _last_heartbeat = now
+                    await redis_client.set("worker:heartbeat", str(now), ex=300)
                 await asyncio.sleep(0.1)
                 
         except Exception as e:
