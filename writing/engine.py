@@ -23,10 +23,13 @@ class WritingEngine:
         self.mouse_listener = None
         self._running = False
         self._left_press_pos = (0, 0)   # where the left button went down (drag detection)
-        self._cached_selected_text = None
-        self._cached_prev_clipboard = None
         self._last_click_x = 100
         self._last_click_y = 100
+        # When the user last made a selection gesture (a drag). A right-click only
+        # offers the button if it follows such a gesture, so ordinary right-clicks
+        # in a terminal or browser don't pop it — and nothing copies until the
+        # button is actually clicked.
+        self._last_selection_gesture = 0.0
 
         # User preferences — fetched from backend on start (and refreshed periodically)
         self._auto_replace   = False   # True → replace immediately, no preview
@@ -92,55 +95,50 @@ class WritingEngine:
                 px, py = self._left_press_pos
                 dragged = (abs(x - px) + abs(y - py)) > 10
                 if dragged:
-                    # Highlight-drag → offer the Xvoice button near the cursor.
-                    threading.Thread(
-                        target=self._capture_selection_and_show,
-                        args=(x, y),
-                        daemon=True,
-                    ).start()
+                    # A drag is a selection gesture → offer the button near the
+                    # cursor. Crucially we do NOT copy here: nothing touches the
+                    # clipboard, and no synthetic Ctrl+C is sent, until the user
+                    # actually clicks the button (see on_xvoice_click). That is what
+                    # keeps a stray drag — or a right-click in a terminal, where
+                    # Ctrl+C is SIGINT — from doing anything destructive.
+                    self._last_selection_gesture = time.time()
+                    self.overlay_manager.show_xvoice_button(x, y)
                 else:
                     # A plain click dismisses the button (unless it landed on it).
                     self.overlay_manager.on_left_click(x, y)
             return
 
-        # Right-click also offers the button (the app's own menu still opens, but
-        # the button click is caught by the global hook above, so it still works).
-        #
-        # It re-uses the selection captured by the preceding drag rather than copying
-        # again. A right-click does not imply the user selected anything, and the
-        # synthetic Ctrl+C fired here landed in whatever app had focus — in a terminal
-        # that is SIGINT, so right-clicking could kill a running process.
+        # Right-click offers the button too, but only when it follows a recent
+        # selection gesture — so ordinary right-clicks (a browser or terminal
+        # context menu) don't pop it. Still no copy here; the app's own menu opens
+        # as usual, and the button click is caught by the global hook above.
         if button == mouse.Button.right and pressed:
-            if self._cached_selected_text and self._cached_selected_text.strip():
+            if time.time() - self._last_selection_gesture < 5.0:
                 self.overlay_manager.show_xvoice_button(x, y)
 
-    def _capture_selection_and_show(self, x, y):
-        from writing import selection
-        time.sleep(0.05)
-        selected_text, prev_clipboard = selection.get_selected_text_and_restore()
-
-        if selected_text and selected_text.strip():
-            self._cached_selected_text = selected_text
-            self._cached_prev_clipboard = prev_clipboard
-            self.overlay_manager.show_xvoice_button(x, y)
-        else:
-            self._cached_selected_text = None
-            self._cached_prev_clipboard = None
-
     def on_xvoice_click(self, x, y):
-        """Called when the user clicks the floating Xvoice button."""
-        selected_text = self._cached_selected_text
-        prev_clipboard = self._cached_prev_clipboard
+        """Called when the user clicks the floating Xvoice button.
 
-        if not selected_text or selected_text.strip() == "":
-            self.overlay_manager.hide_all()
-            return
-
+        This — and only this — is where the selection is copied. The copy runs in a
+        background thread because it sends real keystrokes (Ctrl+C) with short
+        sleeps, which must not block the mouse-listener callback."""
         self._last_click_x = x
         self._last_click_y = y
-        self._cached_selected_text = None
-        self._cached_prev_clipboard = None
-        self.overlay_manager.cmd_queue.put(('show_action', (x, y, selected_text, prev_clipboard)))
+
+        def _capture_and_open():
+            from writing import selection
+            selected_text, prev_clipboard = selection.get_selected_text_and_restore()
+            if not selected_text or not selected_text.strip():
+                # Nothing was actually selected (e.g. the button appeared after a
+                # drag that selected no text). Just dismiss.
+                self.overlay_manager.hide_all()
+                return
+            self.overlay_manager.cmd_queue.put(
+                ('show_action', (self._last_click_x, self._last_click_y,
+                                 selected_text, prev_clipboard))
+            )
+
+        threading.Thread(target=_capture_and_open, daemon=True).start()
 
     def trigger_action(self, action: str, target_language: str | None,
                        selected_text: str, prev_clipboard: str):
@@ -175,10 +173,6 @@ class WritingEngine:
                 ))
 
         def on_error(msg: str):
-            # Release the cached selection — no need to hold the user's text in
-            # memory once the action has finished.
-            self._cached_selected_text = None
-            self._cached_prev_clipboard = None
             logger.error(f"Writing action '{action}' failed: {msg}")
             self.overlay_manager.cmd_queue.put(
                 ("show_toast", (f"✗ {msg[:60]}", False, 2500))
