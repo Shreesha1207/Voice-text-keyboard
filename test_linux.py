@@ -37,7 +37,6 @@ def ensure_dependencies():
     pip_map = {
         "pyaudio":    "pyaudio",
         "pynput":     "pynput",
-        "webrtcvad":  "webrtcvad",
         "pystray":    "pystray",
         "jose":       "python-jose",
         "PIL":        "Pillow",
@@ -160,7 +159,7 @@ def _(verbose=False, quick=False):
 @test("Required packages importable")
 def _(verbose=False, quick=False):
     missing = []
-    for pkg in ["pyaudio", "wave", "pynput", "webrtcvad", "requests", "pystray", "PIL", "jose"]:
+    for pkg in ["pyaudio", "wave", "pynput", "requests", "pystray", "PIL", "jose"]:
         try:
             importlib.import_module(pkg)
             if verbose:
@@ -371,21 +370,7 @@ def _(verbose=False, quick=False):
 
 
 # ─────────────────────────────────────────────
-# 14. webrtcvad
-# ─────────────────────────────────────────────
 
-@test("webrtcvad processes audio frames correctly")
-def _(verbose=False, quick=False):
-    import webrtcvad
-    vad = webrtcvad.Vad(1)
-    silence = b"\x00" * 960   # 30ms at 16kHz, 16-bit mono
-    result = vad.is_speech(silence, 16000)
-    assert isinstance(result, bool), f"Expected bool, got {type(result)}"
-    if verbose:
-        print(f"       VAD on silence: is_speech={result}")
-
-
-# ─────────────────────────────────────────────
 # 15. pynput keyboard listener
 # ─────────────────────────────────────────────
 
