@@ -483,23 +483,12 @@ async def update_timezone(
     if not tz_name:
         raise HTTPException(status_code=400, detail="timezone field is required")
 
-    # The client sends this fire-and-forget on every user fetch, almost always with
-    # the value already stored. Skip unchanged updates entirely — no write, and no
-    # rate-limit budget consumed — so the guard below only sees genuine changes.
-    if tz_name == current_user.timezone:
-        return {"status": "ok", "timezone": tz_name}
-
     # Validate the timezone string
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
     try:
         ZoneInfo(tz_name)
     except (ZoneInfoNotFoundError, KeyError):
         raise HTTPException(status_code=400, detail=f"Invalid timezone: {tz_name}")
-
-    # "Today" for streaks is derived from this zone, so rapidly flipping it could
-    # farm a streak. A handful of real changes a day (travel, DST) is plenty; this
-    # only bites automated flip-flopping.
-    await limit_by_identity("timezone_change", str(current_user.id), limit=5, window_seconds=3600)
 
     current_user.timezone = tz_name
     await db.commit()
