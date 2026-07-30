@@ -997,6 +997,15 @@ def record_audio(output_filename):
         except IOError:
             pass
 
+    # Read a short 150ms tail buffer after key release so trailing speech/consonants
+    # are never clipped before the hardware buffer flushes.
+    tail_deadline = time.time() + 0.15
+    while time.time() < tail_deadline:
+        try:
+            frames.append(stream.read(CHUNK, exception_on_overflow=False))
+        except IOError:
+            pass
+
 
     if winsound:
         winsound.Beep(800, 100)

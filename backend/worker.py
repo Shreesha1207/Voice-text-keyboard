@@ -47,14 +47,12 @@ async def process_transcription(job: dict) -> dict:
                     
                     if not should_translate:
                          if lang == "en":
-                              # Use the transliteration prompt for Trial/English users
                               trans_params["language"] = "en"
-                              trans_params["prompt"] = "Transcribe the audio exactly as it sounds. If the speaker is using a language other than English, transliterate those sounds into the Latin (English) alphabet. Do not translate to English meanings.The script should be in English only. "
+                              trans_params["prompt"] = "Transcribe the audio accurately, preserving exact words, letters, and punctuation as spoken."
                          else:
                               trans_params["prompt"] = (
-                                   "Transcribe the speech exactly as spoken using only English alphabet letters. "
-                                   "If the speaker uses other language, transliterate it phonetically "
-                                   "into Latin(English) script. Never output native Unicode scripts."
+                                   "Transcribe the speech accurately using English alphabet letters. "
+                                   "If non-English words are spoken, transliterate them phonetically into Latin script."
                               )
 
                     logger.info(f"Step 1: Transcribing with params: { {k:v for k,v in trans_params.items() if k != 'file'} }")
