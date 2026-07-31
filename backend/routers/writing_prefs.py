@@ -13,6 +13,7 @@ Endpoints:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import uuid
@@ -29,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import get_current_user
+from queue_manager import queue_manager
 from rate_limit import limit_by_identity
 from models import User, WritingAction, WritingPreferences, SubscriptionStatus
 from schemas import (
@@ -367,13 +369,75 @@ async def _get_or_create_prefs(db: AsyncSession, user_id: uuid.UUID) -> WritingP
 #  GET /api/writing/preferences
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Seconds a user's preferences stay cached in Redis.
+#
+# Desktop builds shipped before the polling loop was removed ask for this every
+# five seconds, forever, whether or not the app is being used — and those copies
+# are already installed on people's machines. A client-side fix cannot reach
+# them, so the load has to be absorbed here. Caching turns a poll into a Redis
+# GET instead of a database round-trip, cutting the DB cost of a 5-second poller
+# by roughly 12x. PATCH clears the entry, so a save is still reflected at once.
+PREFS_CACHE_SECONDS = 60
+
+# Backstop against a genuinely runaway client. Far above any sane polling rate,
+# so it never affects normal use; it only stops one machine hammering the API.
+PREFS_RATE_LIMIT       = 60
+PREFS_RATE_WINDOW_SECS = 60
+
+
+def _prefs_cache_key(user_id) -> str:
+    return f"writingprefs:{user_id}"
+
+
+async def _cached_prefs(user_id) -> Optional[dict]:
+    """Read a cached preferences payload, or None. Never raises — a cache that can
+    take the endpoint down is worse than no cache."""
+    try:
+        raw = await queue_manager.redis.get(_prefs_cache_key(user_id))
+        return json.loads(raw) if raw else None
+    except Exception as e:
+        logger.warning(f"Preferences cache read failed ({e}); using the database.")
+        return None
+
+
+async def _store_prefs_cache(user_id, payload: dict) -> None:
+    try:
+        await queue_manager.redis.set(
+            _prefs_cache_key(user_id),
+            json.dumps(payload, default=str),
+            ex=PREFS_CACHE_SECONDS,
+        )
+    except Exception as e:
+        logger.warning(f"Preferences cache write failed ({e}); serving uncached.")
+
+
+async def invalidate_prefs_cache(user_id) -> None:
+    """Drop the cached copy so the next read reflects a just-saved change."""
+    try:
+        await queue_manager.redis.delete(_prefs_cache_key(user_id))
+    except Exception as e:
+        logger.warning(f"Preferences cache invalidation failed ({e}) for {user_id}.")
+
+
 @router.get("/writing/preferences", response_model=WritingPreferencesOut)
 async def get_writing_preferences(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Return user's writing preferences. Creates a row with defaults on first call."""
-    return await _get_or_create_prefs(db, current_user.id)
+    await limit_by_identity(
+        "writing_prefs", str(current_user.id),
+        PREFS_RATE_LIMIT, PREFS_RATE_WINDOW_SECS,
+    )
+
+    cached = await _cached_prefs(current_user.id)
+    if cached is not None:
+        return WritingPreferencesOut(**cached)
+
+    prefs = await _get_or_create_prefs(db, current_user.id)
+    payload = WritingPreferencesOut.model_validate(prefs)
+    await _store_prefs_cache(current_user.id, payload.model_dump())
+    return payload
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -396,6 +460,9 @@ async def update_writing_preferences(
     prefs.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(prefs)
+    # Must happen after the commit, or a concurrent read could repopulate the
+    # cache with the pre-save values and pin them for the whole TTL.
+    await invalidate_prefs_cache(current_user.id)
     return prefs
 
 
@@ -434,6 +501,9 @@ async def update_writing_hotkey(
     prefs.updated_at = datetime.utcnow()
     await db.commit()
     await db.refresh(prefs)
+    # custom_hotkey is part of the cached payload, so this write must invalidate
+    # it too — otherwise a new hotkey would not take effect for up to a minute.
+    await invalidate_prefs_cache(current_user.id)
     return prefs
 
 
