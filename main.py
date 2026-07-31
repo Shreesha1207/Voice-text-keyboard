@@ -972,7 +972,22 @@ def record_audio(output_filename):
         audio = pyaudio.PyAudio()
 
     wait_hotkey(HOTKEY)
-    _show_listening()          # glow on — recording starts now
+
+    # Open the microphone FIRST, then light up.
+    #
+    # The glow used to be shown here, the instant the hotkey went down, while
+    # audio.open() below is the part that actually takes time (the OS has to grab
+    # the input device). The screen therefore said "listening" a moment before the
+    # mic was live, and anything spoken in that gap was simply never captured —
+    # which is exactly how a first syllable goes missing.
+    #
+    # Now the glow waits for the device. If the mic is slow to come up the glow is
+    # equally slow; if it's instant, so is the glow. The visual promise and the
+    # recording start at the same moment.
+    #
+    # The start beep deliberately stays BEFORE the open: winsound.Beep blocks for
+    # its full duration, so playing it after would put the tone itself inside the
+    # live recording.
     if winsound:
         winsound.Beep(1000, 100)
 
@@ -987,6 +1002,8 @@ def record_audio(output_filename):
         while is_pressed(HOTKEY):
             time.sleep(0.1)
         return False
+
+    _show_listening()          # mic is live — glow on
 
     # Capture the whole recording, unmodified. No per-frame decisions at all — just
     # read the microphone for as long as the key is held.
