@@ -230,6 +230,26 @@ def _get() -> ListeningOverlay:
     return _overlay
 
 
+def prewarm():
+    """Build the Qt host and the overlay widgets before they are first needed.
+
+    Everything here is lazy: the first show_listening() had to start the
+    QApplication thread, import the Qt widget stack, construct both windows and
+    run the first paint of a 46-layer glow. In a frozen build that is a visible
+    lag — so the glow trailed the microphone badly on the very first dictation
+    and was near-instant on every one afterwards.
+
+    Doing it once at startup makes the timing consistent, which is the point: the
+    glow is meant to track the microphone, not the state of Qt's import cache.
+    Nothing is shown here — the widgets are built hidden.
+    """
+    try:
+        ov = _get()
+        ov._host.run_on_ui(ov._ensure_built)
+    except Exception as e:
+        logger.error(f"Listening overlay prewarm failed: {e}")
+
+
 def show_listening():
     _get().show()
 

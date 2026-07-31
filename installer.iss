@@ -36,6 +36,13 @@ PrivilegesRequired=lowest
 OutputBaseFilename=XVoiceSetup
 SolidCompression=yes
 WizardStyle=modern dynamic
+; Xvoice runs as a tray app with no window, and Windows will not let Setup
+; overwrite a running .exe. Without this, Setup left the OLD binary in place and
+; every rebuild appeared to change nothing. AppMutex lets Setup see the running
+; copy — main.py creates this exact mutex at startup — and close it first.
+AppMutex=XvoiceSingleInstanceMutex
+CloseApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -43,8 +50,26 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
+[InstallDelete]
+; Clear the install dir first. A previous one-dir PyInstaller build left a whole
+; tree behind, and those stale modules can win over the new single-file exe.
+Type: filesandordirs; Name: "{app}\*"
+
 [Files]
-Source: "C:\Users\SHREE\OneDrive\Desktop\Projects\Voice-text-keyboard\dist\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Relative to this .iss file — NEVER hardcode a machine-specific path here.
+;
+; This line used to read
+;   C:\Users\SHREE\OneDrive\Desktop\Projects\Voice-text-keyboard\dist\*
+; so the installer packaged whatever exe happened to sit in that one OneDrive
+; folder. Building the project anywhere else — a different checkout, a different
+; machine, a different user account — changed nothing at all: Setup kept shipping
+; the old binary from that fixed path. {#SourcePath} always resolves to the
+; directory holding this script, so the installer packages the build you just
+; made, wherever you made it.
+;
+; Named explicitly rather than dist\*, so leftovers from an older one-dir build
+; sitting in dist\ are not swept into the installer.
+Source: "{#SourcePath}\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 
 [Icons]

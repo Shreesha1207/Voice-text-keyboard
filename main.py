@@ -72,6 +72,31 @@ _last_sync_time = 0.0
 INSTANCE_PORT = 45679          # arbitrary; distinct from LOCAL_PORT (45678)
 _instance_lock: socket.socket | None = None
 
+# Must match AppMutex in installer.iss.
+INSTANCE_MUTEX_NAME = "XvoiceSingleInstanceMutex"
+_instance_mutex = None          # keep the handle alive for the process lifetime
+
+
+def _create_instance_mutex() -> None:
+    """Publish a named Windows mutex so the installer can see us running.
+
+    The loopback socket below is what actually enforces one instance, but Inno
+    Setup cannot check a TCP port — it checks for a named mutex. Without one,
+    Setup had no idea Xvoice was live, and since Windows refuses to overwrite a
+    running .exe it quietly left the old binary in place while reporting success.
+    Purely a visibility marker; it enforces nothing on its own.
+    """
+    global _instance_mutex
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        _instance_mutex = ctypes.windll.kernel32.CreateMutexW(
+            None, False, INSTANCE_MUTEX_NAME
+        )
+    except Exception as e:
+        logger.warning(f"Could not create the installer-visible mutex: {e}")
+
 def _live_instance_running() -> bool:
     """Return True only if something is actively listening on INSTANCE_PORT."""
     try:
@@ -973,6 +998,14 @@ def _hide_listening():
     except Exception as e:
         logger.error(f"hide_listening failed: {e}")
 
+def _prewarm_listening():
+    """Build the glow overlay ahead of the first hotkey press (see prewarm())."""
+    try:
+        from writing.ui.listening_overlay import prewarm
+        prewarm()
+    except Exception as e:
+        logger.error(f"listening overlay prewarm failed: {e}")
+
 def record_audio(output_filename):
     with suppress_stderr():
         audio = pyaudio.PyAudio()
@@ -1205,6 +1238,7 @@ def voice_loop():
         try:
             require_auth()
             _maybe_start_writing_engine()   # after auth → WRITING_ENABLED is known
+            _prewarm_listening()            # so the first glow is not the slow one
             while True:
                 if need_reauth:
                     need_reauth = False
@@ -1272,6 +1306,10 @@ if __name__ == "__main__":
         webbrowser.open(FRONTEND_URL)
         sys.exit(0)
     # ──────────────────────────────────────────
+
+    # We are the live instance — publish the mutex the installer looks for, so a
+    # future Setup can detect and close us instead of failing to replace the exe.
+    _create_instance_mutex()
 
     # Start the focus-ping listener so future duplicate launches are
     # handled gracefully (daemon=True → dies with the main process).
