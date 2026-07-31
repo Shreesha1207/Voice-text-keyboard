@@ -33,6 +33,13 @@ class WritingEngine:
         self._prefs_initialized = False
         self._last_pref_fetch = 0.0
 
+        # Click-gating state for the floating Xvoice button. A click is a press
+        # AND a release on the button — see _on_click.
+        self._press_was_on_button = False
+        self._click_lock = threading.Lock()
+        self._click_in_flight = False
+        self._last_xvoice_click = 0.0
+
     def start(self):
         if self._running:
             return
@@ -50,7 +57,14 @@ class WritingEngine:
     def _load_preferences(self):
         """Fetch writing preferences from the backend and cache them."""
         self._last_pref_fetch = time.time()
-        prefs = self.backend_client.get_preferences()
+        try:
+            prefs = self.backend_client.get_preferences()
+        except Exception as e:
+            # Runs as a bare thread target, so anything escaping here surfaces as
+            # an unhandled-exception traceback and kills the refresh silently.
+            # Preferences simply keep their previous values.
+            logger.error(f"Could not refresh writing preferences: {e}")
+            return
         if prefs:
             self._auto_replace = prefs.get("auto_replace", self._auto_replace)
             self._show_preview = prefs.get("show_preview", self._show_preview)
@@ -95,13 +109,28 @@ class WritingEngine:
     def _on_click(self, x, y, button, pressed):
         if button == mouse.Button.left:
             if pressed:
-                # Detect a click on the Xvoice button via the GLOBAL hook, so it
-                # works even while a native context menu is grabbing the mouse
-                # (in which case Qt never receives the click on our overlay).
-                if self.overlay_manager.button_hit(x, y):
-                    self.on_xvoice_click(x, y)
+                # Only REMEMBER whether the press landed on the button. Acting here
+                # was a real bug: a press is also how a drag-selection starts, and
+                # the button sits 15px right / 30px above the cursor for several
+                # seconds after any right-click — exactly where you press next. So
+                # starting a new selection near it fired Ctrl+C with no click at
+                # all. In a terminal that Ctrl+C is SIGINT, which kills whatever
+                # command is running.
+                #
+                # The global hook is still what detects the click (Qt never sees it
+                # when a native context menu has grabbed the mouse), just on the
+                # release instead.
+                self._press_was_on_button = self.overlay_manager.button_hit(x, y)
+                if self._press_was_on_button:
                     return
             else:
+                was_on_button = self._press_was_on_button
+                self._press_was_on_button = False
+                # A click is press AND release on the button. A drag that merely
+                # began or ended there is not a click and stays completely inert.
+                if was_on_button and self.overlay_manager.button_hit(x, y):
+                    self.on_xvoice_click(x, y)
+                    return
                 # Releasing a left click — including after a drag — deliberately
                 # does NOT offer the button. Selecting text is not a request to do
                 # anything; the user asks for Xvoice by right-clicking. This keeps
@@ -119,7 +148,16 @@ class WritingEngine:
         # those. If nothing is in fact selected, clicking the button copies nothing
         # and dismisses cleanly (see on_xvoice_click).
         if button == mouse.Button.right and pressed:
+            # A fresh right-click starts a new gesture, so clear the dedupe window.
+            # Without this, offering the button again very soon after a previous
+            # use could swallow the next genuine click.
+            self._last_xvoice_click = 0.0
+            self._press_was_on_button = False
             self.overlay_manager.show_xvoice_button(x, y)
+
+    # Window in which a repeat on_xvoice_click is treated as the same physical
+    # click arriving down a second path, rather than a new invocation.
+    CLICK_DEDUPE_SECONDS = 0.7
 
     def on_xvoice_click(self, x, y):
         """Called when the user clicks the floating Xvoice button.
@@ -127,25 +165,51 @@ class WritingEngine:
         This — and only this — is where the selection is copied. The copy runs in a
         background thread because it sends real keystrokes (Ctrl+C) with short
         sleeps, which must not block the mouse-listener callback."""
+        # One physical click reaches here TWICE: once from the global mouse hook
+        # and once from Qt's own clicked signal on the QPushButton. That sent two
+        # Ctrl+C's per click, with two clipboard save/restore cycles racing each
+        # other. Whichever arrives first wins; the second is dropped.
+        #
+        # Deduping on the in-flight flag alone is not enough — it only covers the
+        # window where the copy thread is still running, and the two callbacks can
+        # straddle it. A short time window makes it deterministic regardless of how
+        # fast the copy completes. The button is hidden on the first click, so a
+        # second genuine invocation needs another right-click and cannot land here
+        # this quickly.
+        now = time.time()
+        with self._click_lock:
+            if self._click_in_flight or (now - self._last_xvoice_click) < self.CLICK_DEDUPE_SECONDS:
+                return
+            self._last_xvoice_click = now
+            self._click_in_flight = True
+
         self._last_click_x = x
         self._last_click_y = y
+
+        # Take the button off screen right away so it cannot be hit again while
+        # the copy is in progress.
+        self.overlay_manager.hide_all()
 
         # The user is about to pick an action, so this is the one moment the
         # preferences matter. Replaces the old always-on polling loop.
         self._refresh_preferences_soon()
 
         def _capture_and_open():
-            from writing import selection
-            selected_text, prev_clipboard = selection.get_selected_text_and_restore()
-            if not selected_text or not selected_text.strip():
-                # Nothing was actually selected (e.g. the button appeared after a
-                # drag that selected no text). Just dismiss.
-                self.overlay_manager.hide_all()
-                return
-            self.overlay_manager.cmd_queue.put(
-                ('show_action', (self._last_click_x, self._last_click_y,
-                                 selected_text, prev_clipboard))
-            )
+            try:
+                from writing import selection
+                selected_text, prev_clipboard = selection.get_selected_text_and_restore()
+                if not selected_text or not selected_text.strip():
+                    # Nothing was actually selected (e.g. the button appeared after a
+                    # drag that selected no text). Just dismiss.
+                    self.overlay_manager.hide_all()
+                    return
+                self.overlay_manager.cmd_queue.put(
+                    ('show_action', (self._last_click_x, self._last_click_y,
+                                     selected_text, prev_clipboard))
+                )
+            finally:
+                with self._click_lock:
+                    self._click_in_flight = False
 
         threading.Thread(target=_capture_and_open, daemon=True).start()
 

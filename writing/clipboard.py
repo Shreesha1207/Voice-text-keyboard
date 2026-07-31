@@ -46,12 +46,59 @@ def set_clipboard(text: str):
     except Exception:
         pass
 
+# Window classes of the Windows console hosts. Ctrl+C means "copy" in an editor
+# but SIGINT in a console: sent to a terminal with no active selection it kills
+# whatever command is running. Terminals also tend to eat the selection on
+# right-click (conhost QuickEdit copies and clears it), so by the time the Xvoice
+# button is clicked there is often nothing selected left to copy — and the
+# keystroke lands as an interrupt instead.
+_CONSOLE_WINDOW_CLASSES = {
+    "ConsoleWindowClass",              # cmd.exe / PowerShell via conhost
+    "CASCADIA_HOSTING_WINDOW_CLASS",   # Windows Terminal
+    "PseudoConsoleWindow",
+    "mintty",                          # Git Bash / MSYS2
+}
+
+
+def _foreground_is_console() -> bool:
+    """True if the window about to receive our keystroke is a Windows console."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        buf = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, buf, 256)
+        return buf.value in _CONSOLE_WINDOW_CLASSES
+    except Exception:
+        return False
+
+
 def copy_selection() -> str:
-    """Simulates Ctrl+C and returns the copied text."""
-    mod_key = Key.cmd if sys.platform == "darwin" else Key.ctrl
+    """Simulates a copy shortcut and returns the copied text.
+
+    Uses Ctrl+Shift+C when the focused window is a console. That is the copy
+    shortcut in Windows Terminal, and in older consoles it is simply ignored — so
+    the worst case is that nothing is copied and the caller dismisses cleanly,
+    rather than interrupting the user's running command.
+    """
+    if sys.platform == "darwin":
+        mod_key, shift = Key.cmd, None
+    elif _foreground_is_console():
+        mod_key, shift = Key.ctrl, Key.shift
+    else:
+        mod_key, shift = Key.ctrl, None
+
     keyboard.press(mod_key)
+    if shift:
+        keyboard.press(shift)
     keyboard.press('c')
     keyboard.release('c')
+    if shift:
+        keyboard.release(shift)
     keyboard.release(mod_key)
     time.sleep(0.15)  # Wait for OS to copy to clipboard
     return get_clipboard()
