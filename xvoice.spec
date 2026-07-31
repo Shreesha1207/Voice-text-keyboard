@@ -15,7 +15,7 @@ block_cipher = None
 # MUST match __version__ in main.py and MyAppVersion in installer.iss. The three
 # had drifted apart (1.1.0 / 1.2.0 / 1.0), so a log file could not be tied to a
 # build and Windows showed the wrong version in Add/Remove Programs.
-APP_VERSION = '1.2.1'
+APP_VERSION = '1.2.0'
 
 # ── Data files & Binaries to bundle ──────────────────────────────────────
 datas = []

@@ -69,7 +69,7 @@ class WritingEngine:
             self._auto_replace = prefs.get("auto_replace", self._auto_replace)
             self._show_preview = prefs.get("show_preview", self._show_preview)
             self._default_language = prefs.get("default_language", self._default_language)
-            logger.debug(
+            logger.info(
                 f"Writing prefs loaded: auto_replace={self._auto_replace}, "
                 f"show_preview={self._show_preview}, lang={self._default_language}"
             )
@@ -96,17 +96,8 @@ class WritingEngine:
         self._last_pref_fetch = time.time()   # claim the slot before the thread starts
         threading.Thread(target=self._load_preferences, daemon=True).start()
 
-    # Minimum gap for the externally-triggered refresh (user just saved settings).
-    # Lower than PREFERENCE_REFRESH_MIN_SECONDS because this is always user-initiated,
-    # but still non-zero to prevent a future caller from accidentally creating a
-    # tight loop by calling this in quick succession.
-    PREFERENCE_SAVE_MIN_SECONDS = 2
-
     def refresh_preferences(self):
         """Called externally (e.g. after user saves settings) to reload prefs."""
-        if time.time() - self._last_pref_fetch < self.PREFERENCE_SAVE_MIN_SECONDS:
-            return
-        self._last_pref_fetch = time.time()
         threading.Thread(target=self._load_preferences, daemon=True).start()
 
     def stop(self):

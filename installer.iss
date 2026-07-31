@@ -4,7 +4,7 @@
 
 #define MyAppName "Xvoice"
 ; Keep in step with __version__ in main.py and APP_VERSION in xvoice.spec.
-#define MyAppVersion "1.2.1"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "Shreesha M Rao"
 #define MyAppURL "https://xvoicekeyboard.com/"
 #define MyAppExeName "xvoice.exe"

@@ -30,7 +30,7 @@ FRONTEND_URL         = "https://xvoicekeyboard.com"           # Dictation dashbo
 WRITING_DASHBOARD_URL = "https://xvoicekeyboard.com/writing/dashboard"  # Writing dashboard
 LOCAL_PORT = 45678
 
-__version__ = "1.2.1"
+__version__ = "1.2.0"
 
 # --- Audio Settings ---
 HOTKEY = 'f8'
