@@ -187,6 +187,12 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("requests").setLevel(logging.WARNING)
 logger.info(f"Xvoice v{__version__} starting. Platform: {sys.platform}")
 logger.info(f"Log file: {LOG_FILE}")
+# Which binary is actually producing this log, and is it the only one? Several
+# rounds of debugging were lost to a stale copy still running in the tray while a
+# freshly built one wrote to the same file — the log looked like the new build
+# was misbehaving when it was never the process doing the logging.
+logger.info(f"Executable: {sys.executable}")
+logger.info(f"Frozen: {getattr(sys, 'frozen', False)}  PID: {os.getpid()}")
 
 # ─────────────────────────────────────────────
 #   System Tray
