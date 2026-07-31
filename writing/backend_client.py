@@ -4,10 +4,35 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _user_agent() -> str:
+    """Identify the desktop app in server logs.
+
+    Without this every call arrives as `python-requests/2.x`, which is
+    indistinguishable from any other script, and Railway's access log shows only
+    a proxy address — so there was no way to tell whether traffic came from the
+    desktop app or the web dashboard.
+    """
+    try:
+        from main import __version__ as v
+    except Exception:
+        v = "unknown"
+    return f"Xvoice-Desktop/{v}"
+
+
+USER_AGENT = _user_agent()
+
+
 class BackendClient:
     def __init__(self, base_url: str, token_provider: Callable[[], Optional[str]]):
         self.base_url = base_url
         self.token_provider = token_provider
+
+    def _headers(self, token: str, json_body: bool = False) -> Dict[str, str]:
+        h = {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}
+        if json_body:
+            h["Content-Type"] = "application/json"
+        return h
 
     def transform_text(self, action: str, text: str, target_language: str = "English") -> Dict[str, Any]:
         """
@@ -25,10 +50,7 @@ class BackendClient:
             "target_language": target_language
         }
         
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
+        headers = self._headers(token, json_body=True)
         
         try:
             response = requests.post(url, json=payload, headers=headers, timeout=15)
@@ -59,7 +81,7 @@ class BackendClient:
         try:
             r = requests.get(
                 f"{self.base_url}/writing/preferences",
-                headers={"Authorization": f"Bearer {token}"},
+                headers=self._headers(token),
                 timeout=5,
             )
             if r.status_code == 200:
@@ -76,7 +98,7 @@ class BackendClient:
         try:
             r = requests.post(
                 f"{self.base_url}/writing/record",
-                headers={"Authorization": f"Bearer {token}"},
+                headers=self._headers(token),
                 json={"action_key": action, "char_count": char_count},
                 timeout=5,
             )

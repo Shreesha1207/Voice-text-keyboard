@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone, date as date_type
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from openai import AsyncOpenAI
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -419,8 +419,24 @@ async def invalidate_prefs_cache(user_id) -> None:
         logger.warning(f"Preferences cache invalidation failed ({e}) for {user_id}.")
 
 
+def _caller_tag(request: Request) -> str:
+    """Describe who is calling, so repeat traffic can be attributed.
+
+    Railway's access log shows only a proxy address in 100.64.0.0/10, which says
+    nothing about the origin — the desktop app and the web dashboard are
+    indistinguishable in it. A browser always sends Origin on a cross-site
+    request; requests/urllib3 never does. That is the reliable discriminator.
+    """
+    origin = request.headers.get("origin")
+    ua = (request.headers.get("user-agent") or "unknown")[:80]
+    if origin:
+        return f"browser origin={origin} ua={ua}"
+    return f"non-browser ua={ua}"
+
+
 @router.get("/writing/preferences", response_model=WritingPreferencesOut)
 async def get_writing_preferences(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -433,6 +449,10 @@ async def get_writing_preferences(
     cached = await _cached_prefs(current_user.id)
     if cached is not None:
         return WritingPreferencesOut(**cached)
+
+    # Logged on cache misses only — roughly once per user per cache window, so
+    # this identifies whoever is polling without doubling the log volume.
+    logger.info(f"writing/preferences uncached read by {_caller_tag(request)}")
 
     prefs = await _get_or_create_prefs(db, current_user.id)
     payload = WritingPreferencesOut.model_validate(prefs)
