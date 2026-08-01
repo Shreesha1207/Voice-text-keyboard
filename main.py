@@ -1114,10 +1114,14 @@ def normalize_audio(input_file, output_file):
             ffmpeg = local if os.path.isfile(local) else "ffmpeg"
         else:
             ffmpeg = "ffmpeg"
+        kwargs = {}
+        if sys.platform == "win32":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         subprocess.run(
             [ffmpeg, "-y", "-i", input_file,
              "-af", "loudnorm=I=-16:LRA=11:TP=-1.5", "-ar", "16000", output_file],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True,
+            **kwargs
         )
         return True
     except Exception:
