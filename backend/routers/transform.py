@@ -132,10 +132,13 @@ def _build_system_prompt(action: str, target_language: str | None) -> str:
 
 def _writing_quota_for(user: User) -> int:
     """Return the monthly action limit for this user. 0 = unlimited."""
-    if user.plan_product in ("writing", "platform"):
+    if user.writing_is_paid:
         return UNLIMITED_QUOTA
-    if user.subscription_status == SubscriptionStatus.PAID:
-        # Paid dictation-only users get a generous but capped writing trial
+    if user.subscription_is_active:
+        # Paid dictation-only users get a generous but capped writing allowance.
+        # subscription_is_active rather than == PAID, so someone who cancelled but
+        # is still inside their paid period is not cut off early — which is what
+        # every other entitlement in the codebase does.
         return 100
     return FREE_WRITING_QUOTA
 

@@ -360,7 +360,9 @@ def start_tray():
         pystray.MenuItem(
             "Open Writing Dashboard",
             lambda icon, item: webbrowser.open(WRITING_DASHBOARD_URL),
-            visible=lambda item: PLAN_PRODUCT in ("writing", "platform"),
+            # Same reason as _maybe_start_writing_engine: PLAN_PRODUCT outlives the
+            # subscription, WRITING_ENABLED does not.
+            visible=lambda item: WRITING_ENABLED,
         ),
         pystray.MenuItem("Download Page",  _open_download),
         pystray.Menu.SEPARATOR,
@@ -1224,7 +1226,12 @@ def _maybe_start_writing_engine():
     global _writing_engine
     if _writing_engine is not None:
         return
-    if WRITING_ENABLED or PLAN_PRODUCT in ("writing", "platform"):
+    # Trust WRITING_ENABLED alone. This used to also accept PLAN_PRODUCT being
+    # writing/platform, which is a record of what was once bought and is never
+    # cleared when a subscription lapses — so a lapsed subscriber still got the
+    # full Writing UI locally. The server computes writing_enabled from a live
+    # subscription plus the trial, so it is the one answer worth asking.
+    if WRITING_ENABLED:
         try:
             from writing.engine import WritingEngine
             _writing_engine = WritingEngine(load_token)

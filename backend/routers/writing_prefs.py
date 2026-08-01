@@ -74,8 +74,9 @@ def _writing_status(user: User) -> dict:
     """
     now = datetime.utcnow()
 
-    # Paid: plan_product covers writing OR platform
-    is_paid = user.plan_product in ("writing", "platform")
+    # Paid: a live writing-or-platform subscription. Tested via writing_is_paid so
+    # a lapsed plan_product cannot keep granting unlimited access.
+    is_paid = user.writing_is_paid
     if is_paid:
         return {
             "status": "paid",
