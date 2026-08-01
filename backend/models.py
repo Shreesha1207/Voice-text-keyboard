@@ -109,6 +109,22 @@ class User(Base):
             return "paid"
         return "trial"
 
+    @property
+    def writing_is_paid(self) -> bool:
+        """Paid **writing** access — the mirror of `tier` for the other product.
+
+        The writing gates used to test plan_product on its own, with no check that
+        the subscription was still live. plan_product records what someone bought
+        and is never cleared when a subscription lapses, so anyone who had ever
+        held a Writing or Platform plan kept unlimited Writing forever: cancelling
+        correctly removed their Dictation premium, which does check, but left
+        Writing untouched.
+
+        Deliberately excludes the free writing trial — callers that should honour
+        the trial OR it with this in their own condition.
+        """
+        return self.subscription_is_active and self.plan_product in ("writing", "platform")
+
 
 class Session(Base):
     __tablename__ = "sessions"

@@ -277,7 +277,7 @@ async def validate_status(current_user: User = Depends(get_current_user)):
     # Writing access is governed by the WRITING trial only (writing_trial_started_at),
     # independent of the dictation/keyboard trial — do NOT couple it to trial_active.
     writing_enabled = (
-        current_user.plan_product in ("writing", "platform")
+        current_user.writing_is_paid
         or writing_trial_active
     )
 
@@ -325,7 +325,7 @@ async def get_me(current_user: User = Depends(get_current_user)):
         writing_trial_active = (datetime.now(timezone.utc) - w_started).days < 14
 
     writing_enabled = (
-        current_user.plan_product in ("writing", "platform")
+        current_user.writing_is_paid
         or writing_trial_active
     )
 
