@@ -19,6 +19,7 @@ from security import (
     SECRET_KEY, ALGORITHM
 )
 from dependencies import get_current_user
+from user_events import EVENT_ENTITLEMENTS_UPDATED, publish_user_event
 from jose import jwt, JWTError
 from datetime import datetime, timezone
 
@@ -31,6 +32,41 @@ import hashlib
 from rate_limit import limit_by_ip, limit_by_identity
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
+
+
+WRITING_TRIAL_DAYS = 14
+
+
+def writing_trial_active(user: User) -> bool:
+    """True while the free writing trial is still running.
+
+    Was computed inline in two endpoints with slightly different code for the same
+    rule; pushed settings need it a third time, so it lives in one place now.
+    """
+    started = user.writing_trial_started_at
+    if started is None:
+        return False
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - started).days < WRITING_TRIAL_DAYS
+
+
+def _desktop_settings(user: User) -> dict:
+    """Everything the desktop app keeps in memory about the signed-in user.
+
+    Pushed whenever any of it changes, so the app never has to ask. Deliberately
+    the same field names /auth/validate returns, so the client applies a pushed
+    update and a validate response through one code path.
+    """
+    return {
+        "tier": user.tier,
+        "custom_hotkey": user.custom_hotkey,
+        "preferred_language": user.preferred_language,
+        "is_translation_enabled": user.is_translation_enabled,
+        "plan_product": user.plan_product,
+        "writing_enabled": user.writing_is_paid or writing_trial_active(user),
+        "dictation_enabled": user.tier == "paid" or not user.is_trial_expired,
+    }
 
 
 def _hash_reset_token(token: str) -> str:
@@ -267,18 +303,11 @@ async def validate_status(current_user: User = Depends(get_current_user)):
     # Compute entitlements
     dictation_enabled = (current_user.tier == "paid") or trial_active
 
-    # Check writing trial state
-    writing_trial_active = False
-    if current_user.writing_trial_started_at is not None:
-        w_started = current_user.writing_trial_started_at.replace(tzinfo=timezone.utc) if current_user.writing_trial_started_at.tzinfo is None else current_user.writing_trial_started_at
-        w_elapsed = (datetime.now(timezone.utc) - w_started).days
-        writing_trial_active = w_elapsed < 14
-
     # Writing access is governed by the WRITING trial only (writing_trial_started_at),
     # independent of the dictation/keyboard trial — do NOT couple it to trial_active.
     writing_enabled = (
         current_user.writing_is_paid
-        or writing_trial_active
+        or writing_trial_active(current_user)
     )
 
     if writing_enabled or dictation_enabled:
@@ -315,18 +344,9 @@ async def get_me(current_user: User = Depends(get_current_user)):
 
     # Writing: writing/platform plan, OR an active WRITING trial (separate from the
     # keyboard trial — keyed on writing_trial_started_at, 14-day window).
-    writing_trial_active = False
-    if current_user.writing_trial_started_at is not None:
-        w_started = (
-            current_user.writing_trial_started_at.replace(tzinfo=timezone.utc)
-            if current_user.writing_trial_started_at.tzinfo is None
-            else current_user.writing_trial_started_at
-        )
-        writing_trial_active = (datetime.now(timezone.utc) - w_started).days < 14
-
     writing_enabled = (
         current_user.writing_is_paid
-        or writing_trial_active
+        or writing_trial_active(current_user)
     )
 
     return UserOut(
@@ -537,6 +557,10 @@ async def update_hotkey(
     
     current_user.custom_hotkey = hotkey
     await db.commit()
+    # Pushed to the running desktop app so the new key binds immediately instead
+    # of on the next restart.
+    await publish_user_event(current_user.id, EVENT_ENTITLEMENTS_UPDATED,
+                             _desktop_settings(current_user))
     return {"status": "ok", "hotkey": hotkey}
 
 @router.patch("/language")
@@ -567,6 +591,8 @@ async def update_language(
     
     current_user.preferred_language = lang
     await db.commit()
+    await publish_user_event(current_user.id, EVENT_ENTITLEMENTS_UPDATED,
+                             _desktop_settings(current_user))
     return {"status": "ok", "language": lang}
 
 @router.patch("/translation")
@@ -581,4 +607,6 @@ async def update_translation(
     
     current_user.is_translation_enabled = data.enabled
     await db.commit()
+    await publish_user_event(current_user.id, EVENT_ENTITLEMENTS_UPDATED,
+                             _desktop_settings(current_user))
     return {"status": "ok", "enabled": data.enabled}

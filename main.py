@@ -1229,9 +1229,40 @@ def get_temp_files() -> tuple[str, str]:
 
 _writing_engine = None
 
-def _background_sync():
-    """Silently fetches the latest preferences from the server."""
-    global PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT, WRITING_ENABLED
+def _apply_settings(data: dict):
+    """Apply a settings payload, whether pushed by the server or fetched once.
+
+    /auth/validate and the pushed events use the same field names on purpose, so
+    there is exactly one place that decides what a setting change means.
+    """
+    global PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT, WRITING_ENABLED, HOTKEY
+    if not data:
+        return
+    before = (PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT, WRITING_ENABLED, HOTKEY)
+
+    PREFERRED_LANGUAGE     = data.get('preferred_language', PREFERRED_LANGUAGE)
+    IS_TRANSLATION_ENABLED = data.get('is_translation_enabled', IS_TRANSLATION_ENABLED)
+    PLAN_PRODUCT           = data.get('plan_product', PLAN_PRODUCT)
+    WRITING_ENABLED        = data.get('writing_enabled', WRITING_ENABLED)
+    hotkey = data.get('custom_hotkey')
+    if hotkey:
+        HOTKEY = hotkey
+
+    after = (PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT, WRITING_ENABLED, HOTKEY)
+    if before != after:
+        logger.info(
+            f"Settings updated: lang={PREFERRED_LANGUAGE}, translate={IS_TRANSLATION_ENABLED}, "
+            f"plan={PLAN_PRODUCT}, writing={WRITING_ENABLED}, hotkey={HOTKEY}"
+        )
+
+    # Buying Writing (or a trial starting) while the app is open should light it
+    # up without a restart.
+    _maybe_start_writing_engine()
+
+
+def _fetch_settings_once():
+    """One read of the current settings. Called at start-up and after the live
+    channel reconnects — never on a timer."""
     token = load_token()
     if not token:
         return
@@ -1239,15 +1270,62 @@ def _background_sync():
         r = requests.get(
             f"{RAILWAY_URL}/auth/validate",
             headers={"Authorization": f"Bearer {token}"},
-            timeout=3
+            timeout=10
         )
-        if r.status_code == 200 and r.json().get('allowed'):
-            PREFERRED_LANGUAGE = r.json().get('preferred_language', PREFERRED_LANGUAGE)
-            IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', IS_TRANSLATION_ENABLED)
-            PLAN_PRODUCT = r.json().get('plan_product', PLAN_PRODUCT)
-            WRITING_ENABLED = r.json().get('writing_enabled', WRITING_ENABLED)
-    except Exception:
-        pass
+        if r.status_code == 200:
+            body = r.json()
+            if body.get('allowed'):
+                _apply_settings(body)
+    except Exception as e:
+        logger.debug(f"Settings catch-up read failed: {e}")
+
+    # Writing preferences live on a different endpoint, so catch those up too —
+    # otherwise a language saved while the app was offline would stay missing.
+    if _writing_engine is not None:
+        _writing_engine.refresh_preferences()
+
+
+def _on_server_event(event_type: str, data: dict):
+    """A setting changed on the website. Apply it now — no fetch involved."""
+    if event_type == "connected":
+        return                      # handshake; the catch-up read covers this
+    if event_type == "preferences_updated":
+        # Writing preferences (including the language shown in the translate menu).
+        if _writing_engine is not None:
+            _writing_engine.apply_preferences(data)
+        else:
+            logger.debug("Writing preferences pushed while the engine is not running.")
+        return
+    if event_type == "entitlements_updated":
+        _apply_settings(data)
+        return
+    logger.debug(f"Ignoring unknown server event: {event_type!r}")
+
+
+_event_stream = None
+
+def _start_event_stream():
+    """Open the live settings channel. Replaces every form of polling.
+
+    The app makes no periodic requests at all after this: the server pushes a
+    change the moment it is saved on the website, which is also what makes a
+    language chosen there appear in the desktop app straight away.
+    """
+    global _event_stream
+    if _event_stream is not None:
+        return
+    try:
+        from events_client import EventStream
+        _event_stream = EventStream(
+            base_url=RAILWAY_URL,
+            token_provider=load_token,
+            on_event=_on_server_event,
+            on_reconnect=_fetch_settings_once,
+            on_unauthorized=try_silent_refresh,
+        )
+        _event_stream.start()
+    except Exception as e:
+        logger.error(f"Could not start the live settings channel: {e}")
 
 def _maybe_start_writing_engine():
     """Start the Writing Engine once, AFTER require_auth() has populated the
@@ -1285,6 +1363,7 @@ def voice_loop():
             require_auth()
             _maybe_start_writing_engine()   # after auth → WRITING_ENABLED is known
             _prewarm_listening()            # so the first glow is not the slow one
+            _start_event_stream()           # live settings; replaces all polling
             while True:
                 if need_reauth:
                     need_reauth = False
@@ -1292,13 +1371,11 @@ def voice_loop():
                     logger.info("Re-authenticating after session expiry.")
                     require_auth()
                     _maybe_start_writing_engine()   # entitlement may now be active
-                
-                # Periodically sync dictation settings from the webapp (every 12 hours)
-                # We do this check non-blockingly right before recording if it's been a while
-                global _last_sync_time
-                if time.time() - _last_sync_time > 43200:
-                    _last_sync_time = time.time()
-                    threading.Thread(target=_background_sync, daemon=True).start()
+
+                # No periodic settings sync here any more. The app used to re-read
+                # /auth/validate on a timer; the server now pushes changes down the
+                # live channel the moment they are saved, so there is nothing to
+                # poll for and nothing goes stale between ticks.
 
                 raw_file, norm_file = get_temp_files()   # unique per recording
 

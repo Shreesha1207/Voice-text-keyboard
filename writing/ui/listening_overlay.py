@@ -47,6 +47,11 @@ BAR_MIN_H     = 10          # resting height — must stay clearly a line, not a
 LEVEL_ATTACK  = 0.55
 LEVEL_DECAY   = 0.14
 
+# The bars sit in their own pill at the TOP of the screen, up by the camera,
+# rather than inside the caption island at the bottom.
+BARS_ISLAND_RADIUS = 16
+BARS_ISLAND_TOP_MARGIN = 12
+
 
 def _make_classes():
     """Build the QWidget subclasses lazily (needs QtWidgets imported)."""
@@ -176,12 +181,6 @@ def _make_classes():
             row.setContentsMargins(16, 8, 18, 8)
             row.setSpacing(10)
 
-            # The static dot and "Xvoice is listening" caption are replaced by bars
-            # that move with the voice: it says the same thing, and also shows the
-            # microphone is genuinely picking you up.
-            self.bars = BarsWidget()
-            row.addWidget(self.bars)
-
             label = QLabel(ISLAND_TEXT)
             label.setStyleSheet(
                 f"color: #F3E3D6; font-family: '{FONT_FAMILY}'; "
@@ -189,10 +188,61 @@ def _make_classes():
             )
             row.addWidget(label)
 
+    class BarsIslandWidget(QWidget):
+        """The voice bars in a pill of their own, pinned to the top of the screen.
+
+        Separate window rather than part of the caption island, because the two
+        sit at opposite edges: this one lives up by the camera the way Siri and
+        the Dynamic Island do, while the caption stays at the bottom.
+        """
+
+        def __init__(self):
+            super().__init__(None)
+            self.setWindowFlags(
+                Qt.FramelessWindowHint
+                | Qt.WindowStaysOnTopHint
+                | Qt.Tool
+                | Qt.WindowTransparentForInput
+                | Qt.WindowDoesNotAcceptFocus
+            )
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+            self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+            self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+            outer = QHBoxLayout(self)
+            outer.setContentsMargins(16, 12, 16, 12)   # room for the shadow
+
+            from PySide6.QtWidgets import QFrame
+            self.pill = QFrame(self)
+            self.pill.setObjectName("barsisland")
+            self.pill.setStyleSheet(
+                f"""
+                #barsisland {{
+                    background-color: {ISLAND_BG};
+                    border-radius: {BARS_ISLAND_RADIUS}px;
+                    border: 1px solid {GLOW_COLOR};
+                }}
+                """
+            )
+            outer.addWidget(self.pill)
+
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(28)
+            shadow.setColor(QColor(GLOW_COLOR))
+            shadow.setOffset(0, 0)
+            self.pill.setGraphicsEffect(shadow)
+
+            row = QHBoxLayout(self.pill)
+            row.setContentsMargins(18, 8, 18, 8)
+            row.setSpacing(0)
+
+            self.bars = BarsWidget()
+            row.addWidget(self.bars)
+
         def set_level(self, level: float, phase: float):
             self.bars.set_level(level, phase)
 
-    return GlowWidget, IslandWidget, QTimer, QGuiApplication, Qt
+    return GlowWidget, IslandWidget, BarsIslandWidget, QTimer, QGuiApplication, Qt
 
 
 class ListeningOverlay:
@@ -202,6 +252,7 @@ class ListeningOverlay:
         self._host = QtHost.instance()
         self._glow = None
         self._island = None
+        self._bars_island = None
         self._timer = None
         self._phase = 0.0
         self._visible = False
@@ -227,12 +278,13 @@ class ListeningOverlay:
     def _ensure_built(self):
         if self._glow is not None:
             return
-        GlowWidget, IslandWidget, QTimer, QGuiApplication, Qt = _make_classes()
+        GlowWidget, IslandWidget, BarsIsland, QTimer, QGuiApplication, Qt = _make_classes()
         self._Qt = Qt
         self._QGuiApplication = QGuiApplication
 
         self._glow = GlowWidget()
         self._island = IslandWidget()
+        self._bars_island = BarsIsland()
 
         self._timer = QTimer()
         self._timer.timeout.connect(self._tick)
@@ -257,6 +309,18 @@ class ListeningOverlay:
             self._island.show()
             self._island.raise_()
 
+            # Bars island: top-centre, up by the camera. Uses the full screen
+            # geometry rather than availableGeometry so it sits at the true top
+            # edge even when the taskbar is docked there.
+            self._bars_island.adjustSize()
+            bw = self._bars_island.width()
+            self._bars_island.move(
+                geo.x() + (geo.width() - bw) // 2,
+                geo.y() + BARS_ISLAND_TOP_MARGIN,
+            )
+            self._bars_island.show()
+            self._bars_island.raise_()
+
             self._phase = 0.0
             self._timer.start(PULSE_MS)
             self._visible = True
@@ -275,6 +339,8 @@ class ListeningOverlay:
                 self._glow.hide()
             if self._island is not None:
                 self._island.hide()
+            if self._bars_island is not None:
+                self._bars_island.hide()
         except Exception as e:
             logger.error(f"Listening overlay hide failed: {e}")
 
@@ -287,9 +353,9 @@ class ListeningOverlay:
         if self._glow is not None:
             self._glow.set_intensity(intensity)
 
-        # The island bars follow the microphone.
-        if self._island is not None:
-            self._island.set_level(self._level, self._phase)
+        # The bars island follows the microphone.
+        if self._bars_island is not None:
+            self._bars_island.set_level(self._level, self._phase)
 
 
 # Module-level singleton + convenience wrappers used by main.py.
