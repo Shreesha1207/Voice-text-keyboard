@@ -1000,6 +1000,23 @@ def _hide_listening():
     except Exception as e:
         logger.error(f"hide_listening failed: {e}")
 
+#   Peak of a 30ms chunk of ordinary speech, used to map amplitude onto the 0–1
+#   the island draws with. Well below full scale so normal talking fills the bars
+#   without needing to shout.
+LEVEL_FULL_SCALE = 9000
+
+def _report_level(pcm: bytes):
+    """Feed the current microphone loudness to the listening island.
+
+    Deliberately cheap and failure-proof: it runs once per 30ms audio chunk inside
+    the recording loop, and nothing about the recording may depend on it.
+    """
+    try:
+        from writing.ui.listening_overlay import set_level
+        set_level(min(1.0, _peak_amplitude(pcm) / LEVEL_FULL_SCALE))
+    except Exception:
+        pass
+
 def _prewarm_listening():
     """Build the glow overlay ahead of the first hotkey press (see prewarm())."""
     try:
@@ -1048,12 +1065,17 @@ def record_audio(output_filename):
 
     # Capture the whole recording, unmodified. No per-frame decisions at all — just
     # read the microphone for as long as the key is held.
+    #
+    # The only thing done per chunk is reporting its loudness to the island so the
+    # bars move with the voice. It never affects what is recorded or uploaded.
     frames = []
     while is_pressed(HOTKEY):
         try:
-            frames.append(stream.read(CHUNK, exception_on_overflow=False))
+            data = stream.read(CHUNK, exception_on_overflow=False)
         except IOError:
-            pass
+            continue
+        frames.append(data)
+        _report_level(data)
 
     # Read a short 150ms tail buffer after key release so trailing speech/consonants
     # are never clipped before the hardware buffer flushes.
@@ -1125,19 +1147,40 @@ def normalize_audio(input_file, output_file):
     except Exception:
         return False
 
+def _post_recording(audio_path, token):
+    """Upload one recording. Opens the file fresh each call so the request can be
+    retried — a used file object is already at EOF and would upload nothing."""
+    with open(audio_path, 'rb') as f:
+        return requests.post(
+            f"{RAILWAY_URL}/transcribe",
+            headers={"Authorization": f"Bearer {token}"},
+            files={'file': f},
+            data={'language': PREFERRED_LANGUAGE},
+            timeout=30
+        )
+
 def transcribe_audio(audio_path):
     global need_reauth
     token = load_token()
     logger.info(f"Transcribing {os.path.basename(audio_path)}...")
     try:
-        with open(audio_path, 'rb') as f:
-            r = requests.post(
-                f"{RAILWAY_URL}/transcribe",
-                headers={"Authorization": f"Bearer {token}"},
-                files={'file': f},
-                data={'language': PREFERRED_LANGUAGE},
-                timeout=30
-            )
+        r = _post_recording(audio_path, token)
+
+        # The access token expired while this recording was being made. Refresh and
+        # send the SAME audio again.
+        #
+        # This used to refresh, show "Session renewed" and stop there — the comment
+        # said the next hotkey press would use the new token, which is true but
+        # discards what the user just said. From their side they held the key,
+        # spoke a full sentence, saw "Xvoice is listening", and got nothing back
+        # except a cheerful notification. The recording is still on disk here, so
+        # there is no reason to lose it.
+        if r.status_code == 401:
+            logger.warning("401 during upload — refreshing the session and retrying this recording.")
+            if try_silent_refresh():
+                r = _post_recording(audio_path, load_token())
+                if r.status_code == 200:
+                    logger.info("Retry after refresh succeeded; recording was not lost.")
 
         if r.status_code == 200:
             text = r.json().get('text', '').strip()
@@ -1150,16 +1193,12 @@ def transcribe_audio(audio_path):
         elif r.status_code == 403:
             safe_notify("Upgrade on the dashboard to continue.", "Trial Expired")
         elif r.status_code == 401:
-            logger.warning("401 received — attempting silent token refresh.")
-            if try_silent_refresh():
-                # Got a fresh token; next F8 press will use it automatically
-                safe_notify("Xvoice reconnected automatically.", "Session renewed")
-            else:
-                # Refresh token missing or expired — need full re-login
-                if os.path.exists(CONFIG_FILE):
-                    os.remove(CONFIG_FILE)
-                need_reauth = True
-                safe_notify("Xvoice will reconnect — check your browser.", "Session expired")
+            # Still 401 after the retry above, so the refresh token is gone or
+            # expired too and a full re-login is needed.
+            if os.path.exists(CONFIG_FILE):
+                os.remove(CONFIG_FILE)
+            need_reauth = True
+            safe_notify("Xvoice will reconnect — check your browser.", "Session expired")
         elif r.status_code == 429:
             safe_notify("Try again in a moment.", "Server busy")
         else:
