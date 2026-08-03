@@ -29,11 +29,34 @@ GLOW_MAX_A    = 130     # peak alpha of the glow (0–255)
 PULSE_MS      = 40      # animation tick (~25 fps)
 FONT_FAMILY   = "Segoe UI"
 
+# ── Voice bars ───────────────────────────────────────────────────────────────
+# The island shows live bars that move with the voice instead of a static dot.
+BAR_COLOR     = "#FFFFFF"   # plain white
+ISLAND_BG     = "rgba(0, 0, 0, 235)"
+BAR_COUNT     = 5
+BAR_WIDTH     = 5
+BAR_GAP       = 5
+BAR_MAX_H     = 26
+BAR_MIN_H     = 10          # resting height — must stay clearly a line, not a dot
+                            # (at BAR_WIDTH the rounded ends meet and it reads as a
+                            #  circle, so keep this comfortably above BAR_WIDTH)
+
+# How fast the bars follow the microphone. Rising is quick so a syllable lands
+# immediately; falling is slower, which is what stops the bars flickering and
+# reads as "listening" rather than "strobing".
+LEVEL_ATTACK  = 0.55
+LEVEL_DECAY   = 0.14
+
+# The bars sit in their own pill at the TOP of the screen, up by the camera,
+# rather than inside the caption island at the bottom.
+BARS_ISLAND_RADIUS = 16
+BARS_ISLAND_TOP_MARGIN = 12
+
 
 def _make_classes():
     """Build the QWidget subclasses lazily (needs QtWidgets imported)."""
     from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout, QGraphicsDropShadowEffect
-    from PySide6.QtCore import Qt, QTimer
+    from PySide6.QtCore import Qt, QTimer, QRectF
     from PySide6.QtGui import QPainter, QColor, QPen, QGuiApplication
 
     class GlowWidget(QWidget):
@@ -73,6 +96,50 @@ def _make_classes():
                 p.drawRoundedRect(r, 20, 20)
             p.end()
 
+    class BarsWidget(QWidget):
+        """Row of vertical bars whose heights follow the microphone level.
+
+        Each bar carries its own phase offset, so at a steady volume they ripple
+        rather than moving as one block — that is what makes it read as reacting
+        to a voice instead of a level meter. Silence settles to short flat lines.
+        """
+
+        def __init__(self):
+            super().__init__(None)
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+            self.setFixedSize(
+                BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP,
+                BAR_MAX_H,
+            )
+            self._level = 0.0     # smoothed 0–1
+            self._phase = 0.0
+
+        def set_level(self, raw: float, phase: float):
+            # Asymmetric smoothing: jump up, ease down.
+            k = LEVEL_ATTACK if raw > self._level else LEVEL_DECAY
+            self._level += (raw - self._level) * k
+            self._phase = phase
+            self.update()
+
+        def paintEvent(self, _):
+            p = QPainter(self)
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(BAR_COLOR))
+
+            mid = self.height() / 2.0
+            for i in range(BAR_COUNT):
+                # Offset each bar around the row so the movement travels across it.
+                wobble = 0.65 + 0.35 * math.sin(self._phase * 6.0 + i * 1.1)
+                h = BAR_MIN_H + (BAR_MAX_H - BAR_MIN_H) * self._level * wobble
+                h = max(BAR_MIN_H, min(BAR_MAX_H, h))
+                x = i * (BAR_WIDTH + BAR_GAP)
+                p.drawRoundedRect(
+                    QRectF(x, mid - h / 2.0, BAR_WIDTH, h),
+                    BAR_WIDTH / 2.0, BAR_WIDTH / 2.0,
+                )
+            p.end()
+
     class IslandWidget(QWidget):
         def __init__(self):
             super().__init__(None)
@@ -96,7 +163,7 @@ def _make_classes():
             self.pill.setStyleSheet(
                 f"""
                 #island {{
-                    background-color: rgba(26, 17, 14, 235);
+                    background-color: {ISLAND_BG};
                     border-radius: 18px;
                     border: 1px solid {GLOW_COLOR};
                 }}
@@ -114,11 +181,6 @@ def _make_classes():
             row.setContentsMargins(16, 8, 18, 8)
             row.setSpacing(10)
 
-            self.dot = QLabel()
-            self.dot.setFixedSize(12, 12)
-            self._style_dot(1.0)
-            row.addWidget(self.dot)
-
             label = QLabel(ISLAND_TEXT)
             label.setStyleSheet(
                 f"color: #F3E3D6; font-family: '{FONT_FAMILY}'; "
@@ -126,17 +188,61 @@ def _make_classes():
             )
             row.addWidget(label)
 
-        def _style_dot(self, intensity: float):
-            a = int(120 + 135 * intensity)
-            self.dot.setStyleSheet(
-                f"background-color: {GLOW_COLOR}; border-radius: 6px; "
-                f"border: 1px solid rgba(255,255,255,{a});"
+    class BarsIslandWidget(QWidget):
+        """The voice bars in a pill of their own, pinned to the top of the screen.
+
+        Separate window rather than part of the caption island, because the two
+        sit at opposite edges: this one lives up by the camera the way Siri and
+        the Dynamic Island do, while the caption stays at the bottom.
+        """
+
+        def __init__(self):
+            super().__init__(None)
+            self.setWindowFlags(
+                Qt.FramelessWindowHint
+                | Qt.WindowStaysOnTopHint
+                | Qt.Tool
+                | Qt.WindowTransparentForInput
+                | Qt.WindowDoesNotAcceptFocus
             )
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+            self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+            self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
 
-        def set_intensity(self, value: float):
-            self._style_dot(value)
+            outer = QHBoxLayout(self)
+            outer.setContentsMargins(16, 12, 16, 12)   # room for the shadow
 
-    return GlowWidget, IslandWidget, QTimer, QGuiApplication, Qt
+            from PySide6.QtWidgets import QFrame
+            self.pill = QFrame(self)
+            self.pill.setObjectName("barsisland")
+            self.pill.setStyleSheet(
+                f"""
+                #barsisland {{
+                    background-color: {ISLAND_BG};
+                    border-radius: {BARS_ISLAND_RADIUS}px;
+                    border: 1px solid {GLOW_COLOR};
+                }}
+                """
+            )
+            outer.addWidget(self.pill)
+
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(28)
+            shadow.setColor(QColor(GLOW_COLOR))
+            shadow.setOffset(0, 0)
+            self.pill.setGraphicsEffect(shadow)
+
+            row = QHBoxLayout(self.pill)
+            row.setContentsMargins(18, 8, 18, 8)
+            row.setSpacing(0)
+
+            self.bars = BarsWidget()
+            row.addWidget(self.bars)
+
+        def set_level(self, level: float, phase: float):
+            self.bars.set_level(level, phase)
+
+    return GlowWidget, IslandWidget, BarsIslandWidget, QTimer, QGuiApplication, Qt
 
 
 class ListeningOverlay:
@@ -146,9 +252,16 @@ class ListeningOverlay:
         self._host = QtHost.instance()
         self._glow = None
         self._island = None
+        self._bars_island = None
         self._timer = None
         self._phase = 0.0
         self._visible = False
+        # Written by the audio thread, read by the Qt thread. A bare float
+        # assignment is atomic in CPython, and the worst case of a torn read here
+        # would be one frame drawn at the previous level — deliberately NOT a lock,
+        # because this is touched once per 30ms audio chunk inside the recording
+        # loop and nothing about the recording may ever wait on the UI.
+        self._level = 0.0
 
     # ── Public, thread-safe ──────────────────────────────────────────────────
     def show(self):
@@ -157,16 +270,21 @@ class ListeningOverlay:
     def hide(self):
         self._host.run_on_ui(self._hide_on_ui)
 
+    def set_level(self, level: float):
+        """Report current microphone loudness, 0–1. Called from the audio thread."""
+        self._level = level
+
     # ── Runs on the Qt thread ────────────────────────────────────────────────
     def _ensure_built(self):
         if self._glow is not None:
             return
-        GlowWidget, IslandWidget, QTimer, QGuiApplication, Qt = _make_classes()
+        GlowWidget, IslandWidget, BarsIsland, QTimer, QGuiApplication, Qt = _make_classes()
         self._Qt = Qt
         self._QGuiApplication = QGuiApplication
 
         self._glow = GlowWidget()
         self._island = IslandWidget()
+        self._bars_island = BarsIsland()
 
         self._timer = QTimer()
         self._timer.timeout.connect(self._tick)
@@ -191,6 +309,18 @@ class ListeningOverlay:
             self._island.show()
             self._island.raise_()
 
+            # Bars island: top-centre, up by the camera. Uses the full screen
+            # geometry rather than availableGeometry so it sits at the true top
+            # edge even when the taskbar is docked there.
+            self._bars_island.adjustSize()
+            bw = self._bars_island.width()
+            self._bars_island.move(
+                geo.x() + (geo.width() - bw) // 2,
+                geo.y() + BARS_ISLAND_TOP_MARGIN,
+            )
+            self._bars_island.show()
+            self._bars_island.raise_()
+
             self._phase = 0.0
             self._timer.start(PULSE_MS)
             self._visible = True
@@ -200,23 +330,32 @@ class ListeningOverlay:
     def _hide_on_ui(self):
         try:
             self._visible = False
+            # Reset, or the next recording opens with the bars still at the volume
+            # of the last word of the previous one.
+            self._level = 0.0
             if self._timer is not None:
                 self._timer.stop()
             if self._glow is not None:
                 self._glow.hide()
             if self._island is not None:
                 self._island.hide()
+            if self._bars_island is not None:
+                self._bars_island.hide()
         except Exception as e:
             logger.error(f"Listening overlay hide failed: {e}")
 
     def _tick(self):
-        # Smooth breathe between ~0.55 and 1.0
         self._phase += PULSE_MS / 1000.0
+
+        # The screen-edge glow keeps its slow independent breathe. Tying it to the
+        # voice as well made the whole screen flicker while talking.
         intensity = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(self._phase * 2.2))
         if self._glow is not None:
             self._glow.set_intensity(intensity)
-        if self._island is not None:
-            self._island.set_intensity(intensity)
+
+        # The bars island follows the microphone.
+        if self._bars_island is not None:
+            self._bars_island.set_level(self._level, self._phase)
 
 
 # Module-level singleton + convenience wrappers used by main.py.
@@ -248,6 +387,14 @@ def prewarm():
         ov._host.run_on_ui(ov._ensure_built)
     except Exception as e:
         logger.error(f"Listening overlay prewarm failed: {e}")
+
+
+def set_level(level: float):
+    """Report microphone loudness (0–1) so the island bars react to the voice."""
+    try:
+        _get().set_level(level)
+    except Exception:
+        pass
 
 
 def show_listening():

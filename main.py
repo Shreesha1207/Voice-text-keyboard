@@ -1000,6 +1000,23 @@ def _hide_listening():
     except Exception as e:
         logger.error(f"hide_listening failed: {e}")
 
+#   Peak of a 30ms chunk of ordinary speech, used to map amplitude onto the 0–1
+#   the island draws with. Well below full scale so normal talking fills the bars
+#   without needing to shout.
+LEVEL_FULL_SCALE = 9000
+
+def _report_level(pcm: bytes):
+    """Feed the current microphone loudness to the listening island.
+
+    Deliberately cheap and failure-proof: it runs once per 30ms audio chunk inside
+    the recording loop, and nothing about the recording may depend on it.
+    """
+    try:
+        from writing.ui.listening_overlay import set_level
+        set_level(min(1.0, _peak_amplitude(pcm) / LEVEL_FULL_SCALE))
+    except Exception:
+        pass
+
 def _prewarm_listening():
     """Build the glow overlay ahead of the first hotkey press (see prewarm())."""
     try:
@@ -1048,12 +1065,17 @@ def record_audio(output_filename):
 
     # Capture the whole recording, unmodified. No per-frame decisions at all — just
     # read the microphone for as long as the key is held.
+    #
+    # The only thing done per chunk is reporting its loudness to the island so the
+    # bars move with the voice. It never affects what is recorded or uploaded.
     frames = []
     while is_pressed(HOTKEY):
         try:
-            frames.append(stream.read(CHUNK, exception_on_overflow=False))
+            data = stream.read(CHUNK, exception_on_overflow=False)
         except IOError:
-            pass
+            continue
+        frames.append(data)
+        _report_level(data)
 
     # Read a short 150ms tail buffer after key release so trailing speech/consonants
     # are never clipped before the hardware buffer flushes.
@@ -1129,19 +1151,40 @@ def normalize_audio(input_file, output_file):
     except Exception:
         return False
 
+def _post_recording(audio_path, token):
+    """Upload one recording. Opens the file fresh each call so the request can be
+    retried — a used file object is already at EOF and would upload nothing."""
+    with open(audio_path, 'rb') as f:
+        return requests.post(
+            f"{RAILWAY_URL}/transcribe",
+            headers={"Authorization": f"Bearer {token}"},
+            files={'file': f},
+            data={'language': PREFERRED_LANGUAGE},
+            timeout=30
+        )
+
 def transcribe_audio(audio_path):
     global need_reauth
     token = load_token()
     logger.info(f"Transcribing {os.path.basename(audio_path)}...")
     try:
-        with open(audio_path, 'rb') as f:
-            r = requests.post(
-                f"{RAILWAY_URL}/transcribe",
-                headers={"Authorization": f"Bearer {token}"},
-                files={'file': f},
-                data={'language': PREFERRED_LANGUAGE},
-                timeout=30
-            )
+        r = _post_recording(audio_path, token)
+
+        # The access token expired while this recording was being made. Refresh and
+        # send the SAME audio again.
+        #
+        # This used to refresh, show "Session renewed" and stop there — the comment
+        # said the next hotkey press would use the new token, which is true but
+        # discards what the user just said. From their side they held the key,
+        # spoke a full sentence, saw "Xvoice is listening", and got nothing back
+        # except a cheerful notification. The recording is still on disk here, so
+        # there is no reason to lose it.
+        if r.status_code == 401:
+            logger.warning("401 during upload — refreshing the session and retrying this recording.")
+            if try_silent_refresh():
+                r = _post_recording(audio_path, load_token())
+                if r.status_code == 200:
+                    logger.info("Retry after refresh succeeded; recording was not lost.")
 
         if r.status_code == 200:
             text = r.json().get('text', '').strip()
@@ -1154,16 +1197,12 @@ def transcribe_audio(audio_path):
         elif r.status_code == 403:
             safe_notify("Upgrade on the dashboard to continue.", "Trial Expired")
         elif r.status_code == 401:
-            logger.warning("401 received — attempting silent token refresh.")
-            if try_silent_refresh():
-                # Got a fresh token; next F8 press will use it automatically
-                safe_notify("Xvoice reconnected automatically.", "Session renewed")
-            else:
-                # Refresh token missing or expired — need full re-login
-                if os.path.exists(CONFIG_FILE):
-                    os.remove(CONFIG_FILE)
-                need_reauth = True
-                safe_notify("Xvoice will reconnect — check your browser.", "Session expired")
+            # Still 401 after the retry above, so the refresh token is gone or
+            # expired too and a full re-login is needed.
+            if os.path.exists(CONFIG_FILE):
+                os.remove(CONFIG_FILE)
+            need_reauth = True
+            safe_notify("Xvoice will reconnect — check your browser.", "Session expired")
         elif r.status_code == 429:
             safe_notify("Try again in a moment.", "Server busy")
         else:
@@ -1194,9 +1233,40 @@ def get_temp_files() -> tuple[str, str]:
 
 _writing_engine = None
 
-def _background_sync():
-    """Silently fetches the latest preferences from the server."""
-    global PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT, WRITING_ENABLED
+def _apply_settings(data: dict):
+    """Apply a settings payload, whether pushed by the server or fetched once.
+
+    /auth/validate and the pushed events use the same field names on purpose, so
+    there is exactly one place that decides what a setting change means.
+    """
+    global PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT, WRITING_ENABLED, HOTKEY
+    if not data:
+        return
+    before = (PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT, WRITING_ENABLED, HOTKEY)
+
+    PREFERRED_LANGUAGE     = data.get('preferred_language', PREFERRED_LANGUAGE)
+    IS_TRANSLATION_ENABLED = data.get('is_translation_enabled', IS_TRANSLATION_ENABLED)
+    PLAN_PRODUCT           = data.get('plan_product', PLAN_PRODUCT)
+    WRITING_ENABLED        = data.get('writing_enabled', WRITING_ENABLED)
+    hotkey = data.get('custom_hotkey')
+    if hotkey:
+        HOTKEY = hotkey
+
+    after = (PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT, WRITING_ENABLED, HOTKEY)
+    if before != after:
+        logger.info(
+            f"Settings updated: lang={PREFERRED_LANGUAGE}, translate={IS_TRANSLATION_ENABLED}, "
+            f"plan={PLAN_PRODUCT}, writing={WRITING_ENABLED}, hotkey={HOTKEY}"
+        )
+
+    # Buying Writing (or a trial starting) while the app is open should light it
+    # up without a restart.
+    _maybe_start_writing_engine()
+
+
+def _fetch_settings_once():
+    """One read of the current settings. Called at start-up and after the live
+    channel reconnects — never on a timer."""
     token = load_token()
     if not token:
         return
@@ -1204,15 +1274,62 @@ def _background_sync():
         r = requests.get(
             f"{RAILWAY_URL}/auth/validate",
             headers={"Authorization": f"Bearer {token}"},
-            timeout=3
+            timeout=10
         )
-        if r.status_code == 200 and r.json().get('allowed'):
-            PREFERRED_LANGUAGE = r.json().get('preferred_language', PREFERRED_LANGUAGE)
-            IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', IS_TRANSLATION_ENABLED)
-            PLAN_PRODUCT = r.json().get('plan_product', PLAN_PRODUCT)
-            WRITING_ENABLED = r.json().get('writing_enabled', WRITING_ENABLED)
-    except Exception:
-        pass
+        if r.status_code == 200:
+            body = r.json()
+            if body.get('allowed'):
+                _apply_settings(body)
+    except Exception as e:
+        logger.debug(f"Settings catch-up read failed: {e}")
+
+    # Writing preferences live on a different endpoint, so catch those up too —
+    # otherwise a language saved while the app was offline would stay missing.
+    if _writing_engine is not None:
+        _writing_engine.refresh_preferences()
+
+
+def _on_server_event(event_type: str, data: dict):
+    """A setting changed on the website. Apply it now — no fetch involved."""
+    if event_type == "connected":
+        return                      # handshake; the catch-up read covers this
+    if event_type == "preferences_updated":
+        # Writing preferences (including the language shown in the translate menu).
+        if _writing_engine is not None:
+            _writing_engine.apply_preferences(data)
+        else:
+            logger.debug("Writing preferences pushed while the engine is not running.")
+        return
+    if event_type == "entitlements_updated":
+        _apply_settings(data)
+        return
+    logger.debug(f"Ignoring unknown server event: {event_type!r}")
+
+
+_event_stream = None
+
+def _start_event_stream():
+    """Open the live settings channel. Replaces every form of polling.
+
+    The app makes no periodic requests at all after this: the server pushes a
+    change the moment it is saved on the website, which is also what makes a
+    language chosen there appear in the desktop app straight away.
+    """
+    global _event_stream
+    if _event_stream is not None:
+        return
+    try:
+        from events_client import EventStream
+        _event_stream = EventStream(
+            base_url=RAILWAY_URL,
+            token_provider=load_token,
+            on_event=_on_server_event,
+            on_reconnect=_fetch_settings_once,
+            on_unauthorized=try_silent_refresh,
+        )
+        _event_stream.start()
+    except Exception as e:
+        logger.error(f"Could not start the live settings channel: {e}")
 
 def _maybe_start_writing_engine():
     """Start the Writing Engine once, AFTER require_auth() has populated the
@@ -1250,6 +1367,7 @@ def voice_loop():
             require_auth()
             _maybe_start_writing_engine()   # after auth → WRITING_ENABLED is known
             _prewarm_listening()            # so the first glow is not the slow one
+            _start_event_stream()           # live settings; replaces all polling
             while True:
                 if need_reauth:
                     need_reauth = False
@@ -1257,13 +1375,11 @@ def voice_loop():
                     logger.info("Re-authenticating after session expiry.")
                     require_auth()
                     _maybe_start_writing_engine()   # entitlement may now be active
-                
-                # Periodically sync dictation settings from the webapp (every 12 hours)
-                # We do this check non-blockingly right before recording if it's been a while
-                global _last_sync_time
-                if time.time() - _last_sync_time > 43200:
-                    _last_sync_time = time.time()
-                    threading.Thread(target=_background_sync, daemon=True).start()
+
+                # No periodic settings sync here any more. The app used to re-read
+                # /auth/validate on a timer; the server now pushes changes down the
+                # live channel the moment they are saved, so there is nothing to
+                # poll for and nothing goes stale between ticks.
 
                 raw_file, norm_file = get_temp_files()   # unique per recording
 

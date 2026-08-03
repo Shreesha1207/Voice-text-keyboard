@@ -32,6 +32,7 @@ from database import get_db
 from dependencies import get_current_user
 from queue_manager import queue_manager
 from rate_limit import limit_by_identity
+from user_events import EVENT_PREFERENCES_UPDATED, publish_user_event
 from models import User, WritingAction, WritingPreferences, SubscriptionStatus
 from schemas import (
     WritingPreferencesOut,
@@ -484,6 +485,14 @@ async def update_writing_preferences(
     # Must happen after the commit, or a concurrent read could repopulate the
     # cache with the pre-save values and pin them for the whole TTL.
     await invalidate_prefs_cache(current_user.id)
+    # Tell any running desktop app straight away. This is what makes "Save
+    # preferences" on the website take effect without the app asking for it —
+    # a language picked in writing settings used to reach the desktop only on a
+    # restart, so it looked as though the save had gone nowhere.
+    await publish_user_event(
+        current_user.id, EVENT_PREFERENCES_UPDATED,
+        WritingPreferencesOut.model_validate(prefs).model_dump(),
+    )
     return prefs
 
 
@@ -525,6 +534,10 @@ async def update_writing_hotkey(
     # custom_hotkey is part of the cached payload, so this write must invalidate
     # it too — otherwise a new hotkey would not take effect for up to a minute.
     await invalidate_prefs_cache(current_user.id)
+    await publish_user_event(
+        current_user.id, EVENT_PREFERENCES_UPDATED,
+        WritingPreferencesOut.model_validate(prefs).model_dump(),
+    )
     return prefs
 
 

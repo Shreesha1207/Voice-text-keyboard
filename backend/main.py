@@ -8,6 +8,7 @@ from worker import start_worker
 
 from routers import auth, stats, achievements, billing, transcribe, transform
 from routers import writing_prefs
+from routers import events
 from models import Achievement, WritingAction, WritingPreferences  # noqa: F401 — ensures init_db creates all tables
 
 import logging
@@ -70,6 +71,7 @@ app.include_router(billing.router)
 app.include_router(transcribe.router)
 app.include_router(transform.router)
 app.include_router(writing_prefs.router)
+app.include_router(events.router)
 
 
 @app.get("/")

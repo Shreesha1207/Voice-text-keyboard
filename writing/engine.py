@@ -25,13 +25,12 @@ class WritingEngine:
         self._last_click_x = 100
         self._last_click_y = 100
 
-        # User preferences — fetched once at start, then only when the user is
-        # actually about to use a writing action (see _refresh_preferences_soon).
+        # User preferences — read once at start-up, then updated only when the
+        # server pushes a change (see apply_preferences). Never polled.
         self._auto_replace   = False   # True → replace immediately, no preview
         self._show_preview   = True    # True → show VS Code-style preview widget
         self._default_language = "en"
         self._prefs_initialized = False
-        self._last_pref_fetch = 0.0
 
         # Click-gating state for the floating Xvoice button. A click is a press
         # AND a release on the button — see _on_click.
@@ -48,15 +47,14 @@ class WritingEngine:
         # silently on every selection.
         from writing import clipboard
         clipboard.check_available()
-        # One fetch at startup. There is deliberately no polling loop after this —
-        # see _refresh_preferences_soon().
+        # One read at start-up. Nothing after this asks the server for
+        # preferences — changes arrive by push (see apply_preferences).
         threading.Thread(target=self._load_preferences, daemon=True).start()
         self.mouse_listener = mouse.Listener(on_click=self._on_click)
         self.mouse_listener.start()
 
     def _load_preferences(self):
         """Fetch writing preferences from the backend and cache them."""
-        self._last_pref_fetch = time.time()
         try:
             prefs = self.backend_client.get_preferences()
         except Exception as e:
@@ -74,30 +72,28 @@ class WritingEngine:
                 f"show_preview={self._show_preview}, lang={self._default_language}"
             )
 
-    # There is no background polling loop — it was removed because it ran forever
-    # on every installed copy, awake or idle, to carry three rarely-changing
-    # settings. Without a replacement, though, preferences saved in the webapp
-    # (/writing/settings) never reached a running app until the user restarted it.
-    # This refreshes them at the one moment their value is about to be used.
-    #
-    # Minimum gap between fetches, so mashing the button doesn't turn into a burst.
-    PREFERENCE_REFRESH_MIN_SECONDS = 30
+    def apply_preferences(self, prefs: dict):
+        """Apply preferences pushed down the live channel from the server.
 
-    def _refresh_preferences_soon(self):
-        """Refresh prefs in the background because the user is about to act.
-
-        Fired when the Xvoice button is clicked. The values are not read until
-        trigger_action(), i.e. after the user has picked an item from the action
-        menu, so this has a human-length head start and never blocks the UI. Idle
-        installs make zero requests.
+        This is how a change made in writing settings on the website reaches a
+        running app. There is no polling and no fetch-on-use: the values arrive
+        the moment Save is pressed, which is also why the language picked there
+        now shows up in the translate menu straight away instead of only after a
+        restart.
         """
-        if time.time() - self._last_pref_fetch < self.PREFERENCE_REFRESH_MIN_SECONDS:
+        if not prefs:
             return
-        self._last_pref_fetch = time.time()   # claim the slot before the thread starts
-        threading.Thread(target=self._load_preferences, daemon=True).start()
+        self._auto_replace     = prefs.get("auto_replace", self._auto_replace)
+        self._show_preview     = prefs.get("show_preview", self._show_preview)
+        self._default_language = prefs.get("default_language", self._default_language)
+        logger.info(
+            f"Writing prefs updated from server: auto_replace={self._auto_replace}, "
+            f"show_preview={self._show_preview}, lang={self._default_language}"
+        )
 
     def refresh_preferences(self):
-        """Called externally (e.g. after user saves settings) to reload prefs."""
+        """One-off re-read. Used on start-up and after the live channel
+        reconnects, to pick up anything saved while the app was offline."""
         threading.Thread(target=self._load_preferences, daemon=True).start()
 
     def stop(self):
@@ -190,9 +186,9 @@ class WritingEngine:
         # the copy is in progress.
         self.overlay_manager.hide_all()
 
-        # The user is about to pick an action, so this is the one moment the
-        # preferences matter. Replaces the old always-on polling loop.
-        self._refresh_preferences_soon()
+        # Deliberately no preference fetch here. Preferences are pushed by the
+        # server when they change, so asking again on every click would be the
+        # polling this replaced, just triggered by the mouse instead of a timer.
 
         def _capture_and_open():
             try:

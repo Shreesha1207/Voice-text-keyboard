@@ -137,6 +137,10 @@ a = Analysis(
         'webbrowser',
         'http.server',
         'pyperclip',
+        # Imported inside a function in main.py. Without it the frozen app is
+        # silently degraded: no live settings channel, so nothing saved on the
+        # website ever reaches it.
+        'events_client',
         # ── PySide6 / Qt UI modules ──
         'PySide6',
         'PySide6.QtCore',
