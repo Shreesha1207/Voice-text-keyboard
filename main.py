@@ -1017,6 +1017,14 @@ def _report_level(pcm: bytes):
     except Exception:
         pass
 
+def _set_listening_state(state: str):
+    """Switch the waveform between idle / listening / processing / speaking."""
+    try:
+        from writing.ui.listening_overlay import set_state
+        set_state(state)
+    except Exception as e:
+        logger.debug(f"set_state({state!r}) failed: {e}")
+
 def _prewarm_listening():
     """Build the glow overlay ahead of the first hotkey press (see prewarm())."""
     try:
@@ -1381,9 +1389,12 @@ def voice_loop():
 
                 try:
                     has_speech = record_audio(raw_file)
-                finally:
-                    _hide_listening()    # glow off the moment recording ends
+                except Exception:
+                    _hide_listening()
+                    raise
+
                 if not has_speech:
+                    _hide_listening()
                     # No audio captured; clean up and wait for next press
                     for f in (raw_file, norm_file):
                         try:
@@ -1392,9 +1403,17 @@ def voice_loop():
                             pass
                     continue
 
-                if os.path.exists(raw_file):
-                    ok = normalize_audio(raw_file, norm_file)
-                    transcribe_audio(norm_file if ok else raw_file)
+                # Something was said. Keep the island up while it is being
+                # transcribed, switched to the calm "processing" motion — the
+                # overlay used to vanish the instant the key came up, so the
+                # seconds spent uploading looked like nothing was happening.
+                try:
+                    _set_listening_state("processing")
+                    if os.path.exists(raw_file):
+                        ok = normalize_audio(raw_file, norm_file)
+                        transcribe_audio(norm_file if ok else raw_file)
+                finally:
+                    _hide_listening()
 
                 for f in (raw_file, norm_file):
                     try:
