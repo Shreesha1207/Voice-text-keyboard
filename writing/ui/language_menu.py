@@ -138,12 +138,19 @@ def show_language_menu(
         menu.body.addWidget(row)
         menu.body.addWidget(_separator())
 
-    # Build the combined list of languages to show
+    # Build the combined list of languages to show.
+    #
+    # custom_lang is whatever was saved as the writing default on the website. It
+    # accepts a comma-separated list, so several extra languages can be added
+    # there without a schema change: "Kannada, Tamil, Telugu" adds all three.
+    # A single value still behaves exactly as before.
     langs_to_show = list(LANGUAGES)
-    if custom_lang and custom_lang.lower() not in [l.lower() for l in langs_to_show]:
-        langs_to_show.append(custom_lang)
+    extras = [c.strip() for c in (custom_lang or "").split(",") if c.strip()]
+    for extra in extras:
+        if extra.lower() not in [l.lower() for l in langs_to_show]:
+            langs_to_show.append(extra)
 
-    active_lang = recent or custom_lang
+    active_lang = recent or (extras[0] if extras else None)
     for lang in langs_to_show:
         is_active = bool(active_lang and lang.lower() == active_lang.lower())
         label_text = f"{lang}  ✓" if is_active else lang
