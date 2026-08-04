@@ -29,17 +29,21 @@ GLOW_MAX_A    = 130     # peak alpha of the glow (0–255)
 PULSE_MS      = 40      # animation tick (~25 fps)
 FONT_FAMILY   = "Segoe UI"
 
-# ── Voice bars ───────────────────────────────────────────────────────────────
-# The island shows live bars that move with the voice instead of a static dot.
-BAR_COLOR     = "#FFFFFF"   # plain white
+# ── Voice waveform ───────────────────────────────────────────────────────────
+# A flowing wave carrying the last ~1s of speech, scrolling right to left.
+WAVE_COLOR    = "#FFFFFF"   # plain white
 ISLAND_BG     = "rgba(0, 0, 0, 235)"
-BAR_COUNT     = 5
-BAR_WIDTH     = 5
-BAR_GAP       = 5
-BAR_MAX_H     = 26
-BAR_MIN_H     = 10          # resting height — must stay clearly a line, not a dot
-                            # (at BAR_WIDTH the rounded ends meet and it reads as a
-                            #  circle, so keep this comfortably above BAR_WIDTH)
+WAVE_WIDTH    = 132
+WAVE_HEIGHT   = 28
+WAVE_MAX_H    = 24          # full height at peak volume
+WAVE_MIN_H    = 3           # resting thickness — a slim line, never nothing
+# How many samples the wave holds. At the ~25fps redraw this is roughly a second
+# of speech on screen at once; fewer looks twitchy, many more looks like a smear.
+WAVE_POINTS   = 34
+# Fraction of the width over which the wave eases in at each end.
+WAVE_EDGE_FRACTION = 0.14
+# Depth of the per-sample wobble that gives the wave its texture.
+WAVE_WOBBLE   = 0.30
 
 # How fast the bars follow the microphone. Rising is quick so a syllable lands
 # immediately; falling is slower, which is what stops the bars flickering and
@@ -97,47 +101,105 @@ def _make_classes():
             p.end()
 
     class BarsWidget(QWidget):
-        """Row of vertical bars whose heights follow the microphone level.
+        """A flowing waveform that reacts to the voice.
 
-        Each bar carries its own phase offset, so at a steady volume they ripple
-        rather than moving as one block — that is what makes it read as reacting
-        to a voice instead of a level meter. Silence settles to short flat lines.
+        The five discrete bars this replaces were jumpy: every bar was driven from
+        the same instantaneous level, so the whole row twitched together on each
+        30ms audio chunk. Nothing carried over between frames, so it read as a
+        level meter flickering rather than a voice being heard.
+
+        This keeps a short rolling history of the level instead and draws a smooth
+        curve through it, scrolling right to left. The shape you see is the last
+        second or so of what you actually said, which is why it looks alive: the
+        motion comes from speech travelling across the widget, not from a value
+        being redrawn in place.
+
+        Drawn as a symmetric envelope around the centre line — the top and bottom
+        halves mirror each other — which is the shape a waveform is expected to
+        have and what ChatGPT's and Gemini's voice modes both use.
         """
 
         def __init__(self):
             super().__init__(None)
             self.setAttribute(Qt.WA_TranslucentBackground, True)
-            self.setFixedSize(
-                BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP,
-                BAR_MAX_H,
-            )
-            self._level = 0.0     # smoothed 0–1
+            self.setFixedSize(WAVE_WIDTH, WAVE_HEIGHT)
+            self._level = 0.0                            # smoothed 0–1
+            self._history = [0.0] * WAVE_POINTS          # oldest → newest
             self._phase = 0.0
 
         def set_level(self, raw: float, phase: float):
-            # Asymmetric smoothing: jump up, ease down.
+            # Asymmetric smoothing: jump up so a syllable registers at once, ease
+            # down so the tail of a word glides instead of snapping to zero.
             k = LEVEL_ATTACK if raw > self._level else LEVEL_DECAY
             self._level += (raw - self._level) * k
             self._phase = phase
+
+            # Scroll the history one step. This is what makes the wave travel.
+            self._history.pop(0)
+            self._history.append(self._level)
             self.update()
 
+        def _envelope(self):
+            """Half-height of the wave at each sample point, in pixels."""
+            n = len(self._history)
+            base = WAVE_MIN_H / 2.0
+            span = (WAVE_MAX_H - WAVE_MIN_H) / 2.0
+            out = []
+            for i, lvl in enumerate(self._history):
+                # Taper only the outermost few points, so the wave eases into the
+                # pill instead of being cut off. Tapering across the whole width
+                # (a sine bow) collapsed every shape into the same lens and hid the
+                # speech entirely — the middle must be free to follow the history.
+                t = i / max(1, n - 1)
+                edge = min(t, 1.0 - t) / WAVE_EDGE_FRACTION
+                taper = min(1.0, edge)
+
+                # Alternating per-sample wobble is what gives a waveform its
+                # texture; without it a sustained note draws a flat-topped slab.
+                # Scaled by level, so silence stays a clean straight line.
+                wobble = 1.0 + WAVE_WOBBLE * math.sin(self._phase * 9.0 + i * 1.7)
+
+                # Only the variable part tapers. The baseline is constant, so the
+                # line never pinches to nothing at the ends.
+                amp = base + span * lvl * wobble * taper
+                out.append(max(base, min(WAVE_MAX_H / 2.0, amp)))
+            return out
+
         def paintEvent(self, _):
+            from PySide6.QtGui import QPainterPath
+
             p = QPainter(self)
             p.setRenderHint(QPainter.Antialiasing)
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(BAR_COLOR))
+            p.setBrush(QColor(WAVE_COLOR))
 
+            amps = self._envelope()
+            n = len(amps)
             mid = self.height() / 2.0
-            for i in range(BAR_COUNT):
-                # Offset each bar around the row so the movement travels across it.
-                wobble = 0.65 + 0.35 * math.sin(self._phase * 6.0 + i * 1.1)
-                h = BAR_MIN_H + (BAR_MAX_H - BAR_MIN_H) * self._level * wobble
-                h = max(BAR_MIN_H, min(BAR_MAX_H, h))
-                x = i * (BAR_WIDTH + BAR_GAP)
-                p.drawRoundedRect(
-                    QRectF(x, mid - h / 2.0, BAR_WIDTH, h),
-                    BAR_WIDTH / 2.0, BAR_WIDTH / 2.0,
-                )
+            step = self.width() / max(1, n - 1)
+
+            # One closed path: along the top of the envelope, back along the
+            # bottom. Filled rather than stroked, so the wave has body at volume
+            # and still reads as a slim line in silence.
+            path = QPainterPath()
+            path.moveTo(0.0, mid - amps[0])
+            for i in range(1, n):
+                x = i * step
+                y = mid - amps[i]
+                # Quadratic through the midpoint of each pair keeps the curve
+                # smooth without the overshoot a cubic spline gives on spiky data.
+                px, py = (i - 1) * step, mid - amps[i - 1]
+                path.quadTo((px + x) / 2.0, (py + y) / 2.0, x, y)
+            for i in range(n - 1, -1, -1):
+                x = i * step
+                y = mid + amps[i]
+                if i == n - 1:
+                    path.lineTo(x, y)
+                else:
+                    nx, ny = (i + 1) * step, mid + amps[i + 1]
+                    path.quadTo((nx + x) / 2.0, (ny + y) / 2.0, x, y)
+            path.closeSubpath()
+            p.drawPath(path)
             p.end()
 
     class IslandWidget(QWidget):
