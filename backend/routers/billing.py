@@ -24,20 +24,59 @@ stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 # Map Stripe price IDs to Xvoice product slugs.
 # Set STRIPE_DICTATION_PRICE_ID, STRIPE_WRITING_PRICE_ID, STRIPE_PLATFORM_PRICE_ID
 # in Railway env vars to match your Stripe Dashboard price IDs.
+VALID_PLAN_PRODUCTS = frozenset({"dictation", "writing", "platform"})
+
 PRICE_TO_PRODUCT: dict[str, str] = {k: v for k, v in [
     (os.getenv("STRIPE_DICTATION_PRICE_ID"), "dictation"),
     (os.getenv("STRIPE_WRITING_PRICE_ID"),   "writing"),
     (os.getenv("STRIPE_PLATFORM_PRICE_ID"),  "platform"),
 ] if k}  # skip None keys (env var not set)
 
+
+def log_plan_product_config() -> None:
+    """Report which price IDs are configured, once, at start-up.
+
+    An unset STRIPE_*_PRICE_ID silently drops that product from the mapping, so a
+    real subscription to it resolves to None and the user keeps whatever
+    plan_product they already had — in practice the "dictation" default. Nothing
+    is logged and nothing raises: Dictation Pro works, Writing never unlocks, and
+    the account looks like a mystery. Missing config belongs in the deploy log,
+    not inferred weeks later from a confused user.
+    """
+    configured = sorted(set(PRICE_TO_PRODUCT.values()))
+    missing = sorted(VALID_PLAN_PRODUCTS - set(configured))
+    if configured:
+        logger.info(f"Stripe price IDs configured for: {configured}")
+    if missing:
+        logger.warning(
+            f"No Stripe price ID set for {missing}. A Stripe subscription to "
+            f"{'/'.join(missing)} cannot be recognised, so those customers will "
+            f"not get that product unless plan_product is supplied explicitly by "
+            f"the billing sync. Missing env vars: "
+            + ", ".join(f"STRIPE_{m.upper()}_PRICE_ID" for m in missing)
+        )
+
+
 def _plan_product_from_subscription(sub_object: dict) -> str | None:
     """Extract the plan_product slug from a Stripe subscription object.
     Returns None if we can't determine the product (don't overwrite existing value)."""
     items = sub_object.get("items", {}).get("data", [])
+    seen = []
     for item in items:
         price_id = item.get("price", {}).get("id")
-        if price_id and price_id in PRICE_TO_PRODUCT:
+        if not price_id:
+            continue
+        seen.append(price_id)
+        if price_id in PRICE_TO_PRODUCT:
             return PRICE_TO_PRODUCT[price_id]
+    if seen:
+        # Silent before. The customer pays, the webhook arrives, the product is
+        # never applied, and nothing records that it happened.
+        logger.error(
+            f"No price ID in {seen} is mapped. Known: {sorted(PRICE_TO_PRODUCT)}. "
+            f"plan_product is left unchanged, so the product they paid for will "
+            f"not unlock. Check the STRIPE_*_PRICE_ID env vars against Stripe."
+        )
     return None
 
 router = APIRouter(prefix="/api/billing", tags=["Billing"])
@@ -390,11 +429,25 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
         user.stripe_subscription_id = subscription_id
     user.cancel_at_period_end = data.get("cancel_at_period_end", False)
 
-    # Update plan_product if provided by the Lovable sync payload
-    # Lovable should pass 'plan_product': 'dictation' | 'writing' | 'platform'
-    if plan_product := data.get("plan_product"):
-        if plan_product in ("dictation", "writing", "platform"):
-            user.plan_product = plan_product
+    # Update plan_product if provided by the Lovable sync payload.
+    #
+    # This compared the raw string against the tuple and did nothing at all when
+    # it did not match — no error, no log line. So "Platform", "PLATFORM", or a
+    # value with a stray space was silently discarded and plan_product stayed at
+    # its default of "dictation". The account then behaved as dictation-only:
+    # Dictation Pro worked, Writing never unlocked, and nothing said why.
+    raw_product = data.get("plan_product")
+    if raw_product is not None:
+        normalised = str(raw_product).strip().lower()
+        if normalised in VALID_PLAN_PRODUCTS:
+            user.plan_product = normalised
+        else:
+            logger.error(
+                f"Billing sync sent plan_product={raw_product!r}, which is not one "
+                f"of {sorted(VALID_PLAN_PRODUCTS)}. Ignoring it — this account "
+                f"keeps plan_product={user.plan_product!r}, so whichever product "
+                f"it does not already own stays locked."
+            )
     
     period_end = data.get("current_period_end")
     if period_end:
@@ -412,4 +465,14 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
                f"subscription_status={user.subscription_status.value}",
     )
     await db.commit()
-    return {"status": "success", "user_id": str(user.id)}
+    # Echo what was actually stored, plus the resulting entitlements. The caller
+    # previously got a bare "success" whether or not its plan_product was
+    # understood, so a rejected value looked exactly like an accepted one.
+    return {
+        "status": "success",
+        "user_id": str(user.id),
+        "plan_product": user.plan_product,
+        "subscription_status": user.subscription_status.value,
+        "dictation_premium": user.tier == "paid",
+        "writing_premium": user.writing_is_paid,
+    }

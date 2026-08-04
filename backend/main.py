@@ -44,7 +44,12 @@ app.add_middleware(
 async def on_startup():
     logger.info("Initializing database...")
     await init_db()
-    
+
+    # Surface missing STRIPE_*_PRICE_ID config in the deploy log. Without it a
+    # subscription to the unmapped product silently leaves plan_product at its
+    # default, and that product never unlocks for the customer.
+    billing.log_plan_product_config()
+
     # Start both the transcription worker AND the trial expiry checker
     start_worker()
     
