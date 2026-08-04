@@ -61,11 +61,30 @@ GLOW_ALPHA    = 44          # alpha of the innermost halo layer
 # Per-state idle height and animation speed, used when there is no live audio.
 WAVE_STATES = {
     #             idle amp   flow   follows mic
-    "idle":       (0.06,     0.40,  False),   # awake, waiting
-    "listening":  (0.00,     1.00,  True),    # follows the voice
-    "processing": (0.34,     0.80,  False),   # thinking — a travelling ripple
-    "speaking":   (0.72,     1.60,  False),   # energetic
+    "idle":       (0.26,     0.85,  False),   # awake, waiting
+    "listening":  (0.16,     1.25,  True),    # follows the voice
+    "processing": (0.52,     1.30,  False),   # thinking — a travelling ripple
+    "speaking":   (0.85,     1.90,  False),   # energetic
 }
+
+# ── Motion ───────────────────────────────────────────────────────────────────
+# A travelling sweep runs across the row at all times, its phase offset by line
+# position so it moves ALONG the row rather than pulsing every line at once.
+#
+# It is present even while following the microphone, deliberately: band levels
+# alone leave the row frozen whenever someone holds a steady vowel, which reads
+# as the indicator having died mid-word. The band still sets the ceiling; the
+# sweep only modulates within it.
+# Crucially, the sweep is applied when DRAWING, after the level smoothing —
+# not folded into the smoothed value. Smoothing exists to stop band readings
+# flickering, and it has a long decay; running the animation through it damped
+# the motion almost to nothing (measured at 0.06px/frame — visually frozen).
+# Smoothing belongs on the data, never on the animation.
+SWEEP_SPEED      = 6.5    # radians per second of flow-adjusted time
+SWEEP_PER_LINE   = 0.62   # radian offset between neighbouring lines
+NOISE_SPEED      = 5.0    # multiplier on the per-line noise drift
+LIVE_SHIMMER     = 0.40   # sweep depth while following a live band, 0-1
+IDLE_SHIMMER     = 0.85   # sweep depth with no live audio — carries all motion
 WAVE_DEFAULT_STATE = "listening"
 
 # How fast a line follows its band. Rising is quick so a syllable lands at once;
@@ -180,7 +199,8 @@ def _make_classes():
                 int(BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP),
                 WAVE_HEIGHT,
             )
-            self._levels = [0.0] * BAR_COUNT   # smoothed, per line
+            self._levels = [0.0] * BAR_COUNT   # smoothed band data, per line
+            self._live = False                 # is a microphone feeding us?
             self._amp = 0.0                    # eased idle amplitude
             self._time = 0.0
             self._state = WAVE_DEFAULT_STATE
@@ -196,16 +216,14 @@ def _make_classes():
             self._time += (PULSE_MS / 1000.0) * flow
             self._amp += (idle_amp - self._amp) * STATE_MORPH
 
+            self._live = bool(follows_mic and bands)
             for i, band_index in enumerate(BAR_BAND_ORDER):
-                if follows_mic and bands:
-                    target = bands[band_index % len(bands)]
-                else:
-                    # No live audio: drive from noise so each line still moves
-                    # on its own rather than the row pulsing in unison.
-                    noise, freq, speed, weight = _OCTAVES[i % len(_OCTAVES)]
-                    n = noise.at(i * 1.7 + self._time * speed * 2.0)
-                    target = self._amp * (0.55 + 0.45 * abs(n))
-
+                # Smooth only the DATA here. The animation is applied at draw
+                # time, so this long decay cannot damp it.
+                target = bands[band_index % len(bands)] if self._live else self._amp
+                if self._live:
+                    # Never fully still between words.
+                    target = max(target, self._amp)
                 k = LEVEL_ATTACK if target > self._levels[i] else LEVEL_DECAY
                 self._levels[i] += (target - self._levels[i]) * k
             self.update()
@@ -216,11 +234,28 @@ def _make_classes():
 
         # ── shape ────────────────────────────────────────────────────────────
         def _bars(self):
-            """(x, height) for each line, in pixels."""
+            """(x, height) for each line, in pixels.
+
+            The travelling sweep is applied here rather than to the stored level,
+            so it runs at full strength regardless of how heavily the band
+            readings are smoothed.
+            """
+            shimmer = LIVE_SHIMMER if self._live else IDLE_SHIMMER
             out = []
             for i, lvl in enumerate(self._levels):
-                h = BAR_MIN_H + (BAR_MAX_H - BAR_MIN_H) * max(0.0, min(1.0, lvl))
-                out.append((i * (BAR_WIDTH + BAR_GAP) + BAR_WIDTH / 2.0, h))
+                # Phase offset per line is what makes the motion travel ALONG the
+                # row instead of every line breathing in unison.
+                sweep = 0.5 + 0.5 * math.sin(
+                    self._time * SWEEP_SPEED - i * SWEEP_PER_LINE
+                )
+                # Per-line noise, so it is not a clean marching sine.
+                noise, _freq, speed, _weight = _OCTAVES[i % len(_OCTAVES)]
+                wander = abs(noise.at(i * 1.7 + self._time * speed * NOISE_SPEED))
+
+                anim = (1.0 - shimmer) + shimmer * (0.65 * sweep + 0.35 * wander)
+                h = BAR_MIN_H + (BAR_MAX_H - BAR_MIN_H) * max(0.0, min(1.0, lvl)) * anim
+                out.append((i * (BAR_WIDTH + BAR_GAP) + BAR_WIDTH / 2.0,
+                            max(BAR_MIN_H, min(BAR_MAX_H, h))))
             return out
 
         def paintEvent(self, _):
