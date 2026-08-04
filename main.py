@@ -1000,20 +1000,18 @@ def _hide_listening():
     except Exception as e:
         logger.error(f"hide_listening failed: {e}")
 
-#   Peak of a 30ms chunk of ordinary speech, used to map amplitude onto the 0–1
-#   the island draws with. Well below full scale so normal talking fills the bars
-#   without needing to shout.
-LEVEL_FULL_SCALE = 9000
-
 def _report_level(pcm: bytes):
-    """Feed the current microphone loudness to the listening island.
+    """Feed per-band microphone energy to the listening island.
 
-    Deliberately cheap and failure-proof: it runs once per 30ms audio chunk inside
-    the recording loop, and nothing about the recording may depend on it.
+    Sends a frequency breakdown rather than one overall volume, so each line in
+    the indicator has its own data to follow. Deliberately cheap and
+    failure-proof: it runs once per 30ms audio chunk inside the recording loop,
+    and nothing about the recording may depend on it.
     """
     try:
-        from writing.ui.listening_overlay import set_level
-        set_level(min(1.0, _peak_amplitude(pcm) / LEVEL_FULL_SCALE))
+        from audio_analysis import band_levels
+        from writing.ui.listening_overlay import set_levels
+        set_levels(band_levels(pcm, RATE))
     except Exception:
         pass
 

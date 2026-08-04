@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from dependencies import get_current_user
+from languages import ALL_LANGUAGES, BUILT_IN, MAX_SELECTED, normalise_selection
 from queue_manager import queue_manager
 from rate_limit import limit_by_identity
 from user_events import EVENT_PREFERENCES_UPDATED, publish_user_event
@@ -436,6 +437,30 @@ def _caller_tag(request: Request) -> str:
     return f"non-browser ua={ua}"
 
 
+@router.get("/writing/languages")
+async def list_writing_languages():
+    """Languages the settings page can offer as extra translate targets.
+
+    Exists so the website can render a real picker. Without it there was no list
+    to build one from, so the only way to reach the language chooser was through
+    the desktop app's "More languages…", which then just opened this same
+    settings page — the app was an unnecessary step in its own configuration.
+
+    Unauthenticated on purpose: it is a static list with nothing user-specific
+    in it, and requiring a token would only make the settings page slower to
+    render.
+    """
+    return {
+        "languages": list(ALL_LANGUAGES),
+        "built_in": list(BUILT_IN),
+        "max_selected": MAX_SELECTED,
+        # How to store a choice: PATCH /api/writing/preferences with
+        # default_language set to a comma-separated list of these names.
+        "field": "default_language",
+        "format": "comma-separated",
+    }
+
+
 @router.get("/writing/preferences", response_model=WritingPreferencesOut)
 async def get_writing_preferences(
     request: Request,
@@ -476,6 +501,20 @@ async def update_writing_preferences(
     prefs = await _get_or_create_prefs(db, current_user.id)
 
     update = data.model_dump(exclude_none=True)
+
+    # default_language doubles as the list of extra translate targets, as a
+    # comma-separated string. Normalise it to canonical spellings here so the
+    # desktop menu shows "Kannada" whatever casing the website posted, and so a
+    # typo cannot quietly become a menu entry that translates to nothing.
+    if "default_language" in update:
+        stored, unknown = normalise_selection(update["default_language"])
+        if unknown:
+            logger.warning(
+                f"Dropping unknown language(s) {unknown} from the writing "
+                f"selection for {current_user.id}; keeping {stored!r}."
+            )
+        update["default_language"] = stored
+
     for field, value in update.items():
         setattr(prefs, field, value)
 

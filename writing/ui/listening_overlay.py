@@ -30,59 +30,51 @@ GLOW_MAX_A    = 130     # peak alpha of the glow (0–255)
 PULSE_MS      = 40      # animation tick (~25 fps)
 FONT_FAMILY   = "Segoe UI"
 
-# ── Voice waveform ───────────────────────────────────────────────────────────
-# A single thin line that displaces organically, not an equaliser and not a sine.
-#
-# The shape comes from layered value noise rather than trigonometry. Sine waves
-# are the reason the previous version read as artificial: they are perfectly
-# periodic, so the eye finds the repeat within a second or two no matter how the
-# amplitude is modulated. Noise has no period, and three octaves drifting at
-# unrelated speeds never realign — every frame genuinely differs from the last.
-WAVE_COLOR    = "#FFFFFF"   # the crisp core line
-GLOW_BLUE     = "#4DA3FF"   # halo around it
+# ── Voice activity indicator ─────────────────────────────────────────────────
+# A row of lines, each driven by its OWN frequency band. That independence is
+# the whole point: an earlier version drove every bar from one overall volume,
+# so the row rose and fell as a block and read as mechanical no matter how much
+# per-bar wobble was added on top. With real bands a vowel lights the low lines
+# and an "s" lights the high ones, and the row moves the way a voice sounds.
+WAVE_COLOR    = "#FFFFFF"   # the lines themselves
+GLOW_BLUE     = "#4DA3FF"   # halo around them
 ISLAND_BG     = "rgba(0, 0, 0, 235)"
 
-WAVE_WIDTH    = 148
-WAVE_HEIGHT   = 34
-WAVE_LINE_PX  = 2.4         # thin, with rounded caps and joins
-WAVE_POINTS   = 56          # sample count along the line; higher = smoother curve
+BAR_WIDTH     = 3.0         # thin, with rounded caps
+BAR_GAP       = 5.0
+BAR_MAX_H     = 26.0        # full height at peak level
+BAR_MIN_H     = 3.0         # resting height — a short line, never a dot
+WAVE_HEIGHT   = 32
 
-# Peak displacement from the centre line, in pixels, at full volume.
-#
-# Generous relative to the widget height because the three noise octaves rarely
-# peak together — their sum usually lands well inside its theoretical range, so a
-# value that looks right on paper draws an almost flat line in practice.
-WAVE_MAX_AMP  = 26.0
-
-# Shape of the centre-weighting. The middle moves most and the motion falls away
-# towards both ends, so the eye is drawn to the centre and the line settles
-# calmly into the pill instead of being cut off.
-WAVE_FOCUS    = 1.7
+# Bands are mirrored around the centre: the middle line is the lowest band,
+# fanning out to the highest at both ends. Speech carries most of its energy low
+# down, so this puts the strongest response in the middle — the natural focus —
+# while every line still reports a genuine, independent frequency.
+BAR_BAND_ORDER = (5, 4, 3, 2, 1, 0, 1, 2, 3, 4, 5)
+BAR_COUNT      = len(BAR_BAND_ORDER)
 
 # Glow: concentric strokes of increasing width and decreasing alpha.
 GLOW_LAYERS   = 4
-GLOW_SPREAD   = 2.6         # px added per layer
-GLOW_ALPHA    = 46          # alpha of the innermost halo layer
+GLOW_SPREAD   = 2.2         # px added per layer
+GLOW_ALPHA    = 44          # alpha of the innermost halo layer
 
-# Per-state amplitude and flow speed. `amp` is a fraction of WAVE_MAX_AMP applied
-# when there is no microphone signal; `flow` scales how fast the noise drifts.
+# Per-state idle height and animation speed, used when there is no live audio.
 WAVE_STATES = {
-    #            idle amp   flow   follows mic
-    "idle":       (0.07,    0.40,  False),   # awake, waiting — barely breathing
-    "listening":  (0.10,    1.00,  True),    # follows the voice
-    "processing": (0.26,    0.55,  False),   # thinking — calm, still moving
-    "speaking":   (0.70,    1.50,  False),   # energetic but smooth
+    #             idle amp   flow   follows mic
+    "idle":       (0.06,     0.40,  False),   # awake, waiting
+    "listening":  (0.00,     1.00,  True),    # follows the voice
+    "processing": (0.34,     0.80,  False),   # thinking — a travelling ripple
+    "speaking":   (0.72,     1.60,  False),   # energetic
 }
 WAVE_DEFAULT_STATE = "listening"
 
-# How fast the line follows the microphone. Rising is quick so a syllable lands
-# immediately; falling is slower, which is what stops it flickering and reads as
-# "listening" rather than "strobing".
-LEVEL_ATTACK  = 0.55
-LEVEL_DECAY   = 0.14
+# How fast a line follows its band. Rising is quick so a syllable lands at once;
+# falling is slower, which is what stops the row flickering.
+LEVEL_ATTACK  = 0.62
+LEVEL_DECAY   = 0.16
 
-# Amplitude changes are eased too, so switching state morphs rather than jumps.
-STATE_MORPH   = 0.08
+# Amplitude changes are eased, so switching state morphs rather than jumps.
+STATE_MORPH   = 0.10
 
 # The waveform sits in its own pill at the TOP of the screen, up by the camera,
 # rather than inside the caption island at the bottom.
@@ -128,7 +120,7 @@ _OCTAVES = (
 def _make_classes():
     """Build the QWidget subclasses lazily (needs QtWidgets imported)."""
     from PySide6.QtWidgets import QWidget, QLabel, QHBoxLayout, QGraphicsDropShadowEffect
-    from PySide6.QtCore import Qt, QTimer, QRectF
+    from PySide6.QtCore import Qt, QTimer, QPointF
     from PySide6.QtGui import QPainter, QColor, QPen, QGuiApplication
 
     class GlowWidget(QWidget):
@@ -169,27 +161,28 @@ def _make_classes():
             p.end()
 
     class WaveformWidget(QWidget):
-        """A single organic line that reacts to the voice.
+        """A row of lines, each following its own frequency band.
 
-        Deliberately NOT a sine. A sine is perfectly periodic, so however its
-        amplitude is modulated the eye finds the repeat within a second or two —
-        that is what made the previous version read as mechanical. The shape here
-        comes from three octaves of value noise drifting at unrelated speeds, so
-        it never realigns and no two frames are the same.
+        Every line is driven by real data — the Goertzel energy of one band of
+        the live microphone signal — so they move independently. That is the
+        difference from the first attempt, where all five bars shared a single
+        volume figure and therefore always moved together.
 
-        Displacement is weighted towards the centre, so the middle moves most and
-        the motion falls away smoothly towards both ends. Stroked as one thin
-        polyline with round caps and joins, under a soft blue halo — no fill, no
-        bars, nothing that reads as an equaliser.
+        Drawn as thin rounded strokes under a soft blue halo. When there is no
+        live audio (idle, processing, speaking) the heights come from smooth
+        noise instead, so the row keeps breathing rather than freezing.
         """
 
         def __init__(self):
             super().__init__(None)
             self.setAttribute(Qt.WA_TranslucentBackground, True)
-            self.setFixedSize(WAVE_WIDTH, WAVE_HEIGHT)
-            self._level = 0.0        # smoothed mic level, 0-1
-            self._amp = 0.0          # eased amplitude actually drawn
-            self._time = 0.0         # noise cursor; advances, never wraps visibly
+            self.setFixedSize(
+                int(BAR_COUNT * BAR_WIDTH + (BAR_COUNT - 1) * BAR_GAP),
+                WAVE_HEIGHT,
+            )
+            self._levels = [0.0] * BAR_COUNT   # smoothed, per line
+            self._amp = 0.0                    # eased idle amplitude
+            self._time = 0.0
             self._state = WAVE_DEFAULT_STATE
 
         # ── public ───────────────────────────────────────────────────────────
@@ -197,83 +190,61 @@ def _make_classes():
             if state in WAVE_STATES:
                 self._state = state
 
-        def set_level(self, raw: float, phase: float):
+        def set_levels(self, bands, phase: float = 0.0):
+            """`bands` is one 0-1 value per entry in audio_analysis.BAND_CENTRES."""
             idle_amp, flow, follows_mic = WAVE_STATES[self._state]
+            self._time += (PULSE_MS / 1000.0) * flow
+            self._amp += (idle_amp - self._amp) * STATE_MORPH
 
-            # Asymmetric smoothing: jump up so a syllable registers at once, ease
-            # down so the tail of a word glides instead of snapping to zero.
-            k = LEVEL_ATTACK if raw > self._level else LEVEL_DECAY
-            self._level += (raw - self._level) * k
+            for i, band_index in enumerate(BAR_BAND_ORDER):
+                if follows_mic and bands:
+                    target = bands[band_index % len(bands)]
+                else:
+                    # No live audio: drive from noise so each line still moves
+                    # on its own rather than the row pulsing in unison.
+                    noise, freq, speed, weight = _OCTAVES[i % len(_OCTAVES)]
+                    n = noise.at(i * 1.7 + self._time * speed * 2.0)
+                    target = self._amp * (0.55 + 0.45 * abs(n))
 
-            target = max(idle_amp, self._level) if follows_mic else idle_amp
-            # Ease towards the target so a state change morphs instead of jumping.
-            self._amp += (target - self._amp) * STATE_MORPH
-
-            # Louder speech also flows faster, which is what makes it feel like it
-            # is responding rather than merely scaling.
-            self._time += (PULSE_MS / 1000.0) * flow * (1.0 + 1.2 * self._amp)
+                k = LEVEL_ATTACK if target > self._levels[i] else LEVEL_DECAY
+                self._levels[i] += (target - self._levels[i]) * k
             self.update()
 
+        # kept so existing callers that only have an overall level still work
+        def set_level(self, raw: float, phase: float = 0.0):
+            self.set_levels([raw] * len(_OCTAVES), phase)
+
         # ── shape ────────────────────────────────────────────────────────────
-        def _points(self):
-            """Vertical offset from the centre line at each sample, in pixels."""
-            n = WAVE_POINTS
-            mid = self.height() / 2.0
-            step = self.width() / (n - 1)
+        def _bars(self):
+            """(x, height) for each line, in pixels."""
             out = []
-            for i in range(n):
-                t = i / (n - 1)
-
-                # Centre focus: most movement in the middle, easing to stillness
-                # at both ends. sin() is fine here — it shapes the envelope, it
-                # does not generate the motion, so it cannot introduce a period.
-                focus = math.sin(math.pi * t) ** WAVE_FOCUS
-
-                d = 0.0
-                for noise, freq, speed, weight in _OCTAVES:
-                    d += weight * noise.at(t * freq * n * 0.25 + self._time * speed)
-
-                out.append((i * step, mid + d * WAVE_MAX_AMP * self._amp * focus))
+            for i, lvl in enumerate(self._levels):
+                h = BAR_MIN_H + (BAR_MAX_H - BAR_MIN_H) * max(0.0, min(1.0, lvl))
+                out.append((i * (BAR_WIDTH + BAR_GAP) + BAR_WIDTH / 2.0, h))
             return out
-
-        def _path(self):
-            from PySide6.QtGui import QPainterPath
-            pts = self._points()
-            path = QPainterPath()
-            path.moveTo(*pts[0])
-            # Quadratic through the midpoint of each pair: C1-continuous, so there
-            # are no visible corners, and no overshoot on a sharp sample.
-            for i in range(1, len(pts)):
-                px, py = pts[i - 1]
-                x, y = pts[i]
-                path.quadTo((px + x) / 2.0, (py + y) / 2.0, x, y)
-            return path
 
         def paintEvent(self, _):
             p = QPainter(self)
             p.setRenderHint(QPainter.Antialiasing)
             p.setBrush(Qt.NoBrush)
-            path = self._path()
+            mid = self.height() / 2.0
+            bars = self._bars()
 
-            # Blue halo: the same path stroked progressively wider and fainter.
-            # Cheaper than a blur effect and it tracks the line exactly.
+            def stroke(color, width):
+                pen = QPen(color)
+                pen.setWidthF(width)
+                pen.setCapStyle(Qt.RoundCap)
+                p.setPen(pen)
+                for x, h in bars:
+                    p.drawLine(QPointF(x, mid - h / 2.0), QPointF(x, mid + h / 2.0))
+
             glow = QColor(GLOW_BLUE)
             for layer in range(GLOW_LAYERS, 0, -1):
-                pen = QPen(QColor(glow.red(), glow.green(), glow.blue(),
-                                  int(GLOW_ALPHA / layer)))
-                pen.setWidthF(WAVE_LINE_PX + layer * GLOW_SPREAD)
-                pen.setCapStyle(Qt.RoundCap)
-                pen.setJoinStyle(Qt.RoundJoin)
-                p.setPen(pen)
-                p.drawPath(path)
+                stroke(QColor(glow.red(), glow.green(), glow.blue(),
+                              int(GLOW_ALPHA / layer)),
+                       BAR_WIDTH + layer * GLOW_SPREAD)
 
-            # Crisp core on top.
-            pen = QPen(QColor(WAVE_COLOR))
-            pen.setWidthF(WAVE_LINE_PX)
-            pen.setCapStyle(Qt.RoundCap)
-            pen.setJoinStyle(Qt.RoundJoin)
-            p.setPen(pen)
-            p.drawPath(path)
+            stroke(QColor(WAVE_COLOR), BAR_WIDTH)
             p.end()
 
     class IslandWidget(QWidget):
@@ -375,8 +346,8 @@ def _make_classes():
             self.wave = WaveformWidget()
             row.addWidget(self.wave)
 
-        def set_level(self, level: float, phase: float):
-            self.wave.set_level(level, phase)
+        def set_levels(self, bands, phase: float):
+            self.wave.set_levels(bands, phase)
 
         def set_state(self, state: str):
             self.wave.set_state(state)
@@ -401,7 +372,7 @@ class ListeningOverlay:
         # would be one frame drawn at the previous level — deliberately NOT a lock,
         # because this is touched once per 30ms audio chunk inside the recording
         # loop and nothing about the recording may ever wait on the UI.
-        self._level = 0.0
+        self._bands = None
 
     # ── Public, thread-safe ──────────────────────────────────────────────────
     def show(self):
@@ -410,9 +381,16 @@ class ListeningOverlay:
     def hide(self):
         self._host.run_on_ui(self._hide_on_ui)
 
-    def set_level(self, level: float):
-        """Report current microphone loudness, 0–1. Called from the audio thread."""
-        self._level = level
+    def set_levels(self, bands):
+        """Report per-band microphone energy. Called from the audio thread.
+
+        A whole-list assignment, deliberately not a lock: this runs once per
+        30ms audio chunk inside the recording loop and nothing about the
+        recording may ever wait on the UI. Rebinding a name is atomic in
+        CPython, so the Qt thread either sees the old list or the new one,
+        never a half-written one.
+        """
+        self._bands = bands
 
     def set_state(self, state: str):
         """idle | listening | processing | speaking. Safe from any thread."""
@@ -482,7 +460,7 @@ class ListeningOverlay:
             self._visible = False
             # Reset, or the next recording opens with the bars still at the volume
             # of the last word of the previous one.
-            self._level = 0.0
+            self._bands = None
             if self._timer is not None:
                 self._timer.stop()
             if self._glow is not None:
@@ -503,9 +481,9 @@ class ListeningOverlay:
         if self._glow is not None:
             self._glow.set_intensity(intensity)
 
-        # The bars island follows the microphone.
+        # Each line follows its own frequency band.
         if self._bars_island is not None:
-            self._bars_island.set_level(self._level, self._phase)
+            self._bars_island.set_levels(self._bands, self._phase)
 
 
 # Module-level singleton + convenience wrappers used by main.py.
@@ -539,10 +517,10 @@ def prewarm():
         logger.error(f"Listening overlay prewarm failed: {e}")
 
 
-def set_level(level: float):
-    """Report microphone loudness (0–1) so the island bars react to the voice."""
+def set_levels(bands):
+    """Report per-band microphone energy so each line reacts to its own band."""
     try:
-        _get().set_level(level)
+        _get().set_levels(bands)
     except Exception:
         pass
 
