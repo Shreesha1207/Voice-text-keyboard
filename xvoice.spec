@@ -141,6 +141,7 @@ a = Analysis(
         # silently degraded: no live settings channel, so nothing saved on the
         # website ever reaches it.
         'events_client',
+        'audio_analysis',
         # ── PySide6 / Qt UI modules ──
         'PySide6',
         'PySide6.QtCore',
