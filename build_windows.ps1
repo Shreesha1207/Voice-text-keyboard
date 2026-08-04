@@ -34,8 +34,14 @@ if ($mainV -ne $specV -or $mainV -ne $issV) {
 Write-Host "Version $mainV (main.py, xvoice.spec, installer.iss all agree)" -ForegroundColor Green
 
 # ── 3. Clean previous output ───────────────────────────────────────────────
-# Leftovers from an older one-dir build in dist\ can otherwise end up shipped.
-Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
+# All three matter:
+#   build\   PyInstaller's analysis cache
+#   dist\    may hold an exe from an older one-dir build
+#   Output\  held XVoiceWritingSetup.exe, committed to git in July. installer.iss
+#            writes XVoiceSetup.exe, so a rebuild never overwrote it — and
+#            running the older, more official-looking name made every rebuild
+#            appear to change nothing.
+Remove-Item -Recurse -Force build, dist, Output -ErrorAction SilentlyContinue
 
 # ── 4. Dependencies ────────────────────────────────────────────────────────
 python -m pip install --upgrade pip
@@ -72,6 +78,17 @@ if (-not $iscc) {
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
 
 $setup = Get-ChildItem -Recurse -Filter "XVoiceSetup.exe" | Select-Object -First 1
+if (-not $setup) { throw "Inno Setup reported success but XVoiceSetup.exe was not found" }
+
+# Nothing else may be sitting in Output\ pretending to be the installer.
+$strays = Get-ChildItem "Output" -Filter *.exe -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -ne "XVoiceSetup.exe" }
+if ($strays) {
+    Write-Host ""
+    Write-Host "WARNING: other installers found in Output\ — do NOT run these:" -ForegroundColor Red
+    $strays | ForEach-Object { Write-Host "  $($_.Name)  ($($_.LastWriteTime))" -ForegroundColor Red }
+}
+
 Write-Host ""
 Write-Host "Done. Installer: $($setup.FullName)" -ForegroundColor Green
 Write-Host ""
