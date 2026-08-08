@@ -301,15 +301,94 @@ def _logout(icon, item):
         os.remove(CONFIG_FILE)
     safe_notify("Logged out from all devices", "Xvoice")
 
+def _refresh_settings(icon=None, item=None):
+    """Re-read everything from the account and apply it, without restarting.
+
+    This is what "Refresh" was always meant to do. It used to relaunch the whole
+    app, which is both slower and unreliable (see _restart_app), when all that is
+    needed is one read: hotkey, language, translation and entitlements all apply
+    live — the keyboard listener compares against KEY_OBJ on every keypress, so a
+    new hotkey takes effect immediately.
+    """
+    def _work():
+        try:
+            _fetch_settings_once()
+            if _writing_engine is not None:
+                _writing_engine.refresh_preferences()
+            safe_notify(f"Settings reloaded. Hotkey: {HOTKEY.upper()}", "Xvoice")
+        except Exception as e:
+            logger.error(f"Refresh failed: {e}")
+            safe_notify("Could not reach the server — try again.", "Xvoice")
+    threading.Thread(target=_work, daemon=True).start()
+
+
+def _release_instance_lock():
+    """Drop the single-instance socket so a replacement process can bind it."""
+    global _instance_lock
+    try:
+        if _instance_lock is not None:
+            _instance_lock.close()
+            _instance_lock = None
+    except Exception:
+        pass
+
+
 def _restart_app(icon, item):
-    """Close the current instance and relaunch the app."""
+    """Close this instance and relaunch the app.
+
+    Two things made this fail as written:
+
+    1. It spawned the replacement while still holding the single-instance socket.
+       The new process would find the port occupied, conclude another instance
+       was already running, open the dashboard and exit — then this one exited
+       too, leaving nothing running at all.
+
+    2. On Windows the child inherited this process's handles, so PyInstaller's
+       bootloader could not delete its extraction directory on the way out. That
+       is the "Failed to remove temporary directory: ..._MEIxxxxxx" warning.
+       Spawning detached, with no inherited handles and a working directory
+       outside the extraction dir, lets the cleanup finish.
+    """
+    # Mint a fresh session BEFORE handing over. Relaunching on its own only makes
+    # the new process re-read the token already on disk — the same session over
+    # again, which is not what a restart is for. Refreshing here writes a new
+    # access token to the config file, so the replacement genuinely starts a new
+    # session. Best-effort: if the network is down the restart still proceeds and
+    # require_auth() sorts it out on the other side.
+    try:
+        if try_silent_refresh():
+            logger.info("Restart: minted a fresh session for the replacement.")
+        else:
+            logger.info("Restart: could not refresh the session; the replacement "
+                        "will re-authenticate on its own.")
+    except Exception as e:
+        logger.warning(f"Restart: session refresh failed ({e}); continuing anyway.")
+
     icon.stop()
+    _release_instance_lock()
+
+    kwargs = {"close_fds": True}
+    if sys.platform == "win32":
+        # DETACHED_PROCESS: no console and no handle inheritance from us.
+        kwargs["creationflags"] = (
+            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+
     if getattr(sys, 'frozen', False):
-        # Running as compiled .exe
-        subprocess.Popen([sys.executable])
+        cmd = [sys.executable]
+        # Never the PyInstaller extraction directory, which is about to be deleted.
+        kwargs["cwd"] = os.path.dirname(os.path.realpath(sys.executable))
     else:
-        # Running as plain Python script
-        subprocess.Popen([sys.executable, os.path.abspath(__file__)])
+        cmd = [sys.executable, os.path.abspath(__file__)]
+        kwargs["cwd"] = os.path.dirname(os.path.abspath(__file__))
+
+    try:
+        subprocess.Popen(cmd, **kwargs)
+    except Exception as e:
+        logger.error(f"Restart failed to launch a replacement: {e}")
+        safe_notify("Restart failed — please start Xvoice manually.", "Xvoice")
+        return          # deliberately stay alive rather than leave nothing running
+
     os._exit(0)
 
 def _quit_app(icon, item):
@@ -370,7 +449,12 @@ def start_tray():
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Help", help_menu),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Refresh / Restart", _restart_app),
+        # Two separate items. They were one, which meant every settings change
+        # cost a full relaunch — and the relaunch was the part that was broken.
+        # Restart still does what it says: closes the app and opens it again on a
+        # freshly minted session.
+        pystray.MenuItem("Refresh settings",        _refresh_settings),
+        pystray.MenuItem("Restart (new session)",   _restart_app),
         pystray.MenuItem("Log Out",        _logout),
         pystray.MenuItem("Quit Xvoice",    _quit_app),
     )
@@ -1245,7 +1329,7 @@ def _apply_settings(data: dict):
     /auth/validate and the pushed events use the same field names on purpose, so
     there is exactly one place that decides what a setting change means.
     """
-    global PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT, WRITING_ENABLED, HOTKEY
+    global PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT, WRITING_ENABLED
     if not data:
         return
     before = (PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT, WRITING_ENABLED, HOTKEY)
@@ -1254,9 +1338,15 @@ def _apply_settings(data: dict):
     IS_TRANSLATION_ENABLED = data.get('is_translation_enabled', IS_TRANSLATION_ENABLED)
     PLAN_PRODUCT           = data.get('plan_product', PLAN_PRODUCT)
     WRITING_ENABLED        = data.get('writing_enabled', WRITING_ENABLED)
+
+    # MUST go through set_dynamic_hotkey. Assigning HOTKEY directly — which this
+    # used to do — changes the string used in logs and the tray title but not
+    # KEY_OBJ, and KEY_OBJ is what on_press actually compares the pressed key
+    # against. The app reported the new hotkey everywhere while still listening
+    # for the old one, so changing it on the website appeared to do nothing.
     hotkey = data.get('custom_hotkey')
-    if hotkey:
-        HOTKEY = hotkey
+    if hotkey and hotkey.lower() != HOTKEY:
+        set_dynamic_hotkey(hotkey)
 
     after = (PREFERRED_LANGUAGE, IS_TRANSLATION_ENABLED, PLAN_PRODUCT, WRITING_ENABLED, HOTKEY)
     if before != after:
