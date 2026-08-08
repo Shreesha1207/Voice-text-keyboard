@@ -219,6 +219,33 @@ logger.info(f"Log file: {LOG_FILE}")
 logger.info(f"Executable: {sys.executable}")
 logger.info(f"Frozen: {getattr(sys, 'frozen', False)}  PID: {os.getpid()}")
 
+
+def _check_ca_bundle():
+    """Confirm the bundled CA certificates are actually present.
+
+    Without them every HTTPS call fails, and it surfaces far from the cause: the
+    token refresh fails, the app demands a browser login, and the settings read
+    after that login fails too — so the hotkey silently falls back to its default
+    and Refresh cannot fix it. Worth one line at startup saying so plainly.
+    """
+    try:
+        import certifi
+        path = certifi.where()
+        if os.path.isfile(path):
+            return True
+        logger.error(
+            f"CA bundle missing at {path}. Every HTTPS request will fail. If this "
+            f"path is under a _MEI temp directory, this process is running out of "
+            f"another instance's extraction folder — restart Xvoice from the Start "
+            f"menu rather than from the tray."
+        )
+    except Exception as e:
+        logger.error(f"Could not locate the CA bundle: {e}")
+    return False
+
+
+_check_ca_bundle()
+
 # ─────────────────────────────────────────────
 #   System Tray
 # ─────────────────────────────────────────────
@@ -312,13 +339,19 @@ def _refresh_settings(icon=None, item=None):
     """
     def _work():
         try:
-            _fetch_settings_once()
-            if _writing_engine is not None:
-                _writing_engine.refresh_preferences()
-            safe_notify(f"Settings reloaded. Hotkey: {HOTKEY.upper()}", "Xvoice")
+            # _fetch_settings_once swallows its own errors, so ask it whether the
+            # read actually landed. Reporting "Settings reloaded. Hotkey: F8"
+            # after a failed read is worse than saying nothing — it looks like the
+            # server really did say F8.
+            if _fetch_settings_once():
+                if _writing_engine is not None:
+                    _writing_engine.refresh_preferences()
+                safe_notify(f"Settings reloaded. Hotkey: {HOTKEY.upper()}", "Xvoice")
+            else:
+                safe_notify("Could not reach the server — settings unchanged.", "Xvoice")
         except Exception as e:
             logger.error(f"Refresh failed: {e}")
-            safe_notify("Could not reach the server — try again.", "Xvoice")
+            safe_notify("Could not reach the server — settings unchanged.", "Xvoice")
     threading.Thread(target=_work, daemon=True).start()
 
 
@@ -367,7 +400,24 @@ def _restart_app(icon, item):
     icon.stop()
     _release_instance_lock()
 
-    kwargs = {"close_fds": True}
+    # Hand the replacement a CLEAN environment.
+    #
+    # This is the one that actually broke restart. PyInstaller's one-file
+    # bootloader sets _MEIPASS2 (and _PYI_* on PyInstaller 6) to tell a process
+    # "you are already unpacked, reuse this directory". A child that inherits
+    # them SKIPS extraction entirely and runs out of the parent's temp folder —
+    # which the parent then deletes on its way out. The replacement is left with
+    # its files pulled out from under it, so certifi's cacert.pem vanishes and
+    # every HTTPS call fails with "Could not find a suitable TLS CA certificate
+    # bundle". The silent token refresh then fails, the app forces a browser
+    # login, and the post-login settings read fails too — which is why the
+    # hotkey came back as the F8 default and Refresh could not fix it either.
+    # It is also why the parent could not remove its own _MEI directory.
+    env = os.environ.copy()
+    for var in [v for v in env if v == "_MEIPASS2" or v.startswith("_PYI")]:
+        env.pop(var, None)
+
+    kwargs = {"close_fds": True, "env": env}
     if sys.platform == "win32":
         # DETACHED_PROCESS: no console and no handle inheritance from us.
         kwargs["creationflags"] = (
@@ -782,8 +832,19 @@ def require_auth():
                 IS_TRANSLATION_ENABLED = r.json().get('is_translation_enabled', False)
                 PLAN_PRODUCT = r.json().get('plan_product', 'dictation')
                 WRITING_ENABLED = r.json().get('writing_enabled', False)
-        except Exception:
-            pass
+            else:
+                logger.warning(
+                    f"Post-login settings read returned HTTP {r.status_code}; "
+                    f"keeping hotkey {HOTKEY.upper()}."
+                )
+        except Exception as e:
+            # Silent before. When this failed — as it does when the CA bundle is
+            # missing — the hotkey was never fetched and quietly stayed at the F8
+            # default, with nothing in the log to say why.
+            logger.error(
+                f"Post-login settings read failed ({e}). Hotkey stays "
+                f"{HOTKEY.upper()} until the next successful sync."
+            )
 
     safe_notify(f"Xvoice is ready. Press {HOTKEY.upper()} to dictate.", "Connected!")
     _sync_timezone()
@@ -1361,7 +1422,8 @@ def _fetch_settings_once():
     channel reconnects — never on a timer."""
     token = load_token()
     if not token:
-        return
+        return False
+    ok = False
     try:
         r = requests.get(
             f"{RAILWAY_URL}/auth/validate",
@@ -1372,13 +1434,19 @@ def _fetch_settings_once():
             body = r.json()
             if body.get('allowed'):
                 _apply_settings(body)
+                ok = True
+        else:
+            logger.warning(f"Settings read returned HTTP {r.status_code}.")
     except Exception as e:
-        logger.debug(f"Settings catch-up read failed: {e}")
+        # Was debug-level, which meant a persistent failure — a missing CA bundle,
+        # say — left no trace while the app quietly ran on defaults.
+        logger.error(f"Settings read failed: {e}")
 
     # Writing preferences live on a different endpoint, so catch those up too —
     # otherwise a language saved while the app was offline would stay missing.
     if _writing_engine is not None:
         _writing_engine.refresh_preferences()
+    return ok
 
 
 def _on_server_event(event_type: str, data: dict):
