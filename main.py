@@ -11,6 +11,7 @@ import threading
 import webbrowser
 import socket
 import tempfile
+import shutil
 import secrets
 import hmac
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -220,31 +221,76 @@ logger.info(f"Executable: {sys.executable}")
 logger.info(f"Frozen: {getattr(sys, 'frozen', False)}  PID: {os.getpid()}")
 
 
-def _check_ca_bundle():
-    """Confirm the bundled CA certificates are actually present.
+#   A copy of the CA bundle that lives outside PyInstaller's temp directory.
+CA_BUNDLE_FILE = os.path.join(CONFIG_DIR, "cacert.pem")
 
-    Without them every HTTPS call fails, and it surfaces far from the cause: the
-    token refresh fails, the app demands a browser login, and the settings read
-    after that login fails too — so the hotkey silently falls back to its default
-    and Refresh cannot fix it. Worth one line at startup saying so plainly.
+
+def _ensure_ca_bundle():
+    """Keep a private copy of the CA certificates, and use it.
+
+    certifi's bundle normally lives inside the one-file extraction directory
+    (…\\Temp\\_MEIxxxxxx\\certifi\\cacert.pem). That directory is owned by
+    whichever process created it and is deleted when that process exits — so if
+    this app ever ends up running against another instance's copy, or an
+    antivirus scanner removes it mid-session, the file disappears underneath a
+    live process and EVERY https call starts failing with "Could not find a
+    suitable TLS CA certificate bundle".
+
+    That failure surfaces nowhere near its cause: the token refresh fails, the
+    app demands a browser login, the settings read after that login fails too,
+    and the hotkey silently drops back to its default with Refresh unable to fix
+    it. All from one missing file.
+
+    So the bundle is copied once into the app's own config directory, which no
+    other process owns and nothing cleans up, and requests is pointed at that
+    copy. The env vars are inherited by any child we spawn, which makes a
+    restarted instance immune as well.
     """
     try:
-        import certifi
-        path = certifi.where()
-        if os.path.isfile(path):
-            return True
-        logger.error(
-            f"CA bundle missing at {path}. Every HTTPS request will fail. If this "
-            f"path is under a _MEI temp directory, this process is running out of "
-            f"another instance's extraction folder — restart Xvoice from the Start "
-            f"menu rather than from the tray."
-        )
+        os.makedirs(CONFIG_DIR, exist_ok=True)
     except Exception as e:
-        logger.error(f"Could not locate the CA bundle: {e}")
-    return False
+        logger.error(f"Could not create the config directory for the CA bundle: {e}")
+        return None
+
+    source = None
+    try:
+        import certifi
+        source = certifi.where()
+    except Exception as e:
+        logger.warning(f"certifi is unavailable ({e}); relying on a cached CA bundle.")
+
+    # Refresh our copy whenever the bundled one is present and differs, so a
+    # certifi update in a new build is picked up rather than pinned forever.
+    try:
+        if source and os.path.isfile(source):
+            if (not os.path.isfile(CA_BUNDLE_FILE)
+                    or os.path.getsize(CA_BUNDLE_FILE) != os.path.getsize(source)):
+                shutil.copyfile(source, CA_BUNDLE_FILE)
+                logger.info(f"CA bundle cached to {CA_BUNDLE_FILE}")
+        elif source:
+            logger.warning(
+                f"Bundled CA file is missing at {source}. A _MEI path here means "
+                f"this process is running out of another instance's extraction "
+                f"folder. Falling back to the cached copy."
+            )
+    except Exception as e:
+        logger.error(f"Could not cache the CA bundle: {e}")
+
+    if os.path.isfile(CA_BUNDLE_FILE):
+        # requests reads these per request, so setting them here covers calls made
+        # from anywhere in the app — and any child process we launch.
+        os.environ["REQUESTS_CA_BUNDLE"] = CA_BUNDLE_FILE
+        os.environ["SSL_CERT_FILE"] = CA_BUNDLE_FILE
+        return CA_BUNDLE_FILE
+
+    logger.error(
+        "No CA bundle available — every HTTPS request will fail. Reinstall Xvoice "
+        "to restore it."
+    )
+    return None
 
 
-_check_ca_bundle()
+_ensure_ca_bundle()
 
 # ─────────────────────────────────────────────
 #   System Tray
