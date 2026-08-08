@@ -142,6 +142,11 @@ a = Analysis(
         # website ever reaches it.
         'events_client',
         'audio_analysis',
+        # Every HTTPS call depends on it. requests pulls it in transitively, but
+        # naming it here means a missing CA bundle can never be a silent build
+        # difference — that failure surfaces as a forced re-login and a hotkey
+        # reset, nowhere near its cause.
+        'certifi',
         # ── PySide6 / Qt UI modules ──
         'PySide6',
         'PySide6.QtCore',
