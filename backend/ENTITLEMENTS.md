@@ -68,6 +68,27 @@ write path is covered. The backfill does the same thing in SQL, ahead of time.
 stray whitespace, so both the fallback and the backfill compare it normalised
 (`lower(trim(...))`). An exact match would drop those paying customers to trial.
 
+## What premium actually unlocks
+
+Verified per product against the real handlers, not just the flags:
+
+| Gate | Resolved by |
+|---|---|
+| Custom push-to-talk hotkey (`PUT /auth/hotkey`) | `tier` → `dictation_is_paid` |
+| Transcription language (`PUT /auth/language`) | `tier` → `dictation_is_paid` |
+| Live translation (`PUT /auth/translation`) | `tier` → `dictation_is_paid` |
+| Transcription queue priority | `tier` → `dictation_is_paid` |
+| Unlimited writing actions | `writing_is_paid` |
+| Writing status / daily cap | `writing_is_paid` |
+| Desktop `dictation_enabled` / `writing_enabled` | the respective flag |
+
+A paid **Dictation** customer gets 100 writing actions a month rather than the
+free tier's 30 — a taste of the other product, deliberately not unlimited and
+not an entitlement to it. This predates the change (it applied to any active
+subscription); it is now scoped to Dictation specifically. If Writing should
+have no allowance at all for Dictation customers, drop that branch in
+`transform._writing_quota_for`.
+
 ## Test matrix
 
 Run `POST /api/billing/dev/simulate` (development builds only) then check
