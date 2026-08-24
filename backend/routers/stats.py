@@ -5,15 +5,14 @@ from datetime import datetime, date, timedelta, timezone
 from typing import Optional, List
 import uuid
 import calendar
-from zoneinfo import ZoneInfo
 
 from database import get_db
+from dependencies import get_current_user, get_safe_zoneinfo
 from models import User, Session, WordRecord
 from schemas import (
     RecordWordsRequest, StatsSummaryResponse, LeaderboardResponse, LeaderboardEntry,
     StartSessionResponse, DailyStat, DailyStatsResponse
 )
-from dependencies import get_current_user
 from routers.achievements import check_and_grant_achievements
 
 import logging
@@ -102,7 +101,7 @@ async def internal_record_stats(user: User, db: AsyncSession, data: RecordWordsR
     user.total_words += data.word_count
     
     # Update Streak Logic — use the user's local timezone so "today" is correct
-    user_tz = ZoneInfo(user.timezone or "UTC")
+    user_tz = get_safe_zoneinfo(user.timezone)
     today = datetime.now(user_tz).date()
     if user.last_active_date:
         delta = today - user.last_active_date
@@ -132,7 +131,7 @@ async def internal_record_stats(user: User, db: AsyncSession, data: RecordWordsR
 async def get_summary(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Get the user's dashboard stats summary"""
     # Use the user's timezone for "today" and "this week" boundaries
-    user_tz = ZoneInfo(current_user.timezone or "UTC")
+    user_tz = get_safe_zoneinfo(current_user.timezone)
     now_local = datetime.now(user_tz)
     today = now_local.date()
     # Convert local midnight back to UTC for querying the DB (records are stored in UTC)
@@ -284,7 +283,7 @@ async def get_daily_stats(
         raise HTTPException(status_code=400, detail="Invalid month format. Use YYYY-MM.")
 
     # Use user's timezone for date boundaries
-    user_tz = ZoneInfo(current_user.timezone or "UTC")
+    user_tz = get_safe_zoneinfo(current_user.timezone)
     year, month_num = parsed_month.year, parsed_month.month
     last_day = calendar.monthrange(year, month_num)[1]
 

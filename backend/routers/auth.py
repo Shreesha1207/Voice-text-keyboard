@@ -509,12 +509,10 @@ async def update_timezone(
     if tz_name == current_user.timezone:
         return {"status": "ok", "timezone": tz_name}
 
-    # Validate the timezone string
-    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-    try:
-        ZoneInfo(tz_name)
-    except (ZoneInfoNotFoundError, KeyError):
-        raise HTTPException(status_code=400, detail=f"Invalid timezone: {tz_name}")
+    # Validate and canonicalize the timezone string (maps legacy aliases like Asia/Calcutta -> Asia/Kolkata)
+    from dependencies import get_safe_zoneinfo
+    user_zone = get_safe_zoneinfo(tz_name)
+    tz_name = user_zone.key if hasattr(user_zone, "key") else tz_name
 
     # "Today" for streaks is derived from this zone, so rapidly flipping it could
     # farm a streak. A handful of real changes a day (travel, DST) is plenty; this

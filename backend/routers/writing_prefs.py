@@ -23,6 +23,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from dependencies import get_safe_zoneinfo
 from openai import AsyncOpenAI
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -128,7 +129,7 @@ def _user_today(user: User) -> date_type:
     here meant an IST user's daily writing cap reset at 05:30 local, mid-morning.
     """
     try:
-        return datetime.now(ZoneInfo(user.timezone or "UTC")).date()
+        return datetime.now(get_safe_zoneinfo(user.timezone)).date()
     except Exception:
         return datetime.utcnow().date()
 
