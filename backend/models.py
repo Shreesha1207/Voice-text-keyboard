@@ -131,7 +131,15 @@ class User(Base):
     def _sub_active(status: str | None, period_end: datetime | None) -> bool:
         """Is one product's subscription currently granting access?"""
         if status == "paid":
-            return True
+            # Honour the expiry when one is known. A subscription that simply
+            # stops being synced — a row deleted upstream, or a sync call that
+            # failed and was never retried — would otherwise grant access
+            # forever, because nothing ever arrives to say it ended.
+            #
+            # A NULL period end means no expiry was ever recorded, not that it
+            # has passed, so keep granting: locking out a paying customer whose
+            # period end we simply never stored would be the worse failure.
+            return period_end is None or period_end > datetime.utcnow()
         if status == "canceled":
             # Cancelled but still inside the paid period — access continues.
             return bool(period_end and period_end > datetime.utcnow())

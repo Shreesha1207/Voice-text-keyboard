@@ -89,6 +89,20 @@ subscription); it is now scoped to Dictation specifically. If Writing should
 have no allowance at all for Dictation customers, drop that branch in
 `transform._writing_quota_for`.
 
+## Stale rows
+
+A `paid` product grants access until its `period_end`, and forever if no period
+end was ever recorded. Sync reports each subscription's status, so a product is
+normally revoked by being told it was cancelled — but nothing arrives to say a
+subscription simply stopped being reported (a row deleted upstream, a sync call
+that failed and was never retried). Honouring the expiry means such a row lapses
+on its own instead of granting access indefinitely.
+
+NULL is treated as "no expiry recorded", not "expired", so a paying customer
+whose period end was never stored keeps access. The backfill copies
+`current_period_end`, which can be NULL, and a sync payload may omit it — so
+that case is real, and locking those users out would be the worse failure.
+
 ## Test matrix
 
 Run `POST /api/billing/dev/simulate` (development builds only) then check
