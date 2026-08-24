@@ -1274,9 +1274,9 @@ def record_audio(output_filename):
         frames.append(data)
         _report_level(data)
 
-    # Read a short 150ms tail buffer after key release so trailing speech/consonants
-    # are never clipped before the hardware buffer flushes.
-    tail_deadline = time.time() + 0.15
+    # Read a short 300ms tail buffer after key release so trailing speech/consonants
+    # and hardware audio buffers flush completely without clipping the final words.
+    tail_deadline = time.time() + 0.30
     while time.time() < tail_deadline:
         try:
             frames.append(stream.read(CHUNK, exception_on_overflow=False))
@@ -1296,7 +1296,11 @@ def record_audio(output_filename):
     if not frames:
         return False
 
-    audio_bytes = b''.join(frames)
+    # Append 200ms of instant silence padding (zero PCM bytes) in RAM. This acts as a
+    # protective buffer against ffmpeg loudnorm end-clipping and gives Whisper / GPT-4o
+    # decoders a clean end-of-speech silence anchor so trailing sentences are never dropped.
+    silence_padding_bytes = b'\x00' * int(RATE * sample_width * CHANNELS * 0.20)
+    audio_bytes = b''.join(frames) + silence_padding_bytes
 
     # Only guard: was anything actually said? This skips a pointless upload after a
     # mis-tap of the hotkey. It looks at the whole recording, so nothing is trimmed

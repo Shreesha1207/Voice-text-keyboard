@@ -48,10 +48,10 @@ async def process_transcription(job: dict) -> dict:
                     if not should_translate:
                          if lang == "en":
                               trans_params["language"] = "en"
-                              trans_params["prompt"] = "Transcribe the audio accurately, preserving exact words, letters, and punctuation as spoken."
+                              trans_params["prompt"] = "Transcribe the full audio accurately and completely, including all trailing words and final sentences, preserving exact words, letters, and punctuation as spoken."
                          else:
                               trans_params["prompt"] = (
-                                   "Transcribe the speech accurately using English alphabet letters. "
+                                   "Transcribe the speech accurately and completely using English alphabet letters, including all trailing words and final sentences. "
                                    "If non-English words are spoken, transliterate them phonetically into Latin script."
                               )
 
