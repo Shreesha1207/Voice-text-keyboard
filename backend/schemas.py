@@ -44,6 +44,10 @@ class ValidateResponse(BaseModel):
     is_translation_enabled: bool = False
     plan_product: str = "dictation"
     writing_enabled: bool = False
+    dictation_premium: bool = False        # active Dictation OR Platform subscription
+    writing_premium: bool = False           # active Writing OR Platform subscription
+    platform_active: bool = False           # a real Platform subscription, never inferred
+    owned_products: list[str] = []          # subscriptions actually held
     dictation_enabled: bool = True
 
 
@@ -103,6 +107,10 @@ class UserOut(BaseModel):
     # ── Writing / Platform entitlements ────────────────────────────────
     plan_product: str = "dictation"        # dictation | writing | platform
     writing_enabled: bool = False          # True when user may use Writing Engine
+    dictation_premium: bool = False        # active Dictation OR Platform subscription
+    writing_premium: bool = False           # active Writing OR Platform subscription
+    platform_active: bool = False           # a real Platform subscription, never inferred
+    owned_products: list[str] = []          # subscriptions actually held
     dictation_enabled: bool = True         # True when user may use Dictation
 
     model_config = {"from_attributes": True}

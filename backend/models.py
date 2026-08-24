@@ -59,6 +59,32 @@ class User(Base):
     # NULL = never started; set to utcnow() when POST /writing/trial/start is called
     writing_trial_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # ── Per-product subscriptions ──────────────────────────────────────────────
+    # Dictation, Writing and Platform are sold separately and a user may hold any
+    # combination of them, so each needs its own status and period end. The single
+    # subscription_status / current_period_end / plan_product trio above cannot
+    # express that: plan_product holds ONE value, so "bought Dictation and Writing
+    # separately" was unrepresentable, and one period_end meant one product's
+    # expiry silently took the other down with it.
+    #
+    # NULL status = this product was never subscribed to. It is not the same as
+    # 'expired', and the entitlement properties fall back to the legacy columns
+    # while it is NULL, so accounts that predate these columns keep working
+    # whether or not the backfill has run yet.
+    #
+    # Values: 'paid' | 'canceled' | 'expired' | NULL
+    dictation_sub_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    dictation_period_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    dictation_sub_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    writing_sub_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    writing_period_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    writing_sub_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    platform_sub_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    platform_period_end: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    platform_sub_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     # Daily writing action counter — resets at midnight UTC
     writing_actions_today: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     writing_today_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # the date the counter applies to
@@ -89,41 +115,158 @@ class User(Base):
             return bool(self.current_period_end and self.current_period_end > datetime.utcnow())
         return False
 
+    # ── Product entitlements ──────────────────────────────────────────────────
+    #
+    # Deliberately NO account-wide "is_premium". Dictation and Writing are
+    # independent purchases, and a single flag is exactly the bug this has to
+    # prevent: buying one product would unlock the other.
+    #
+    #   DICTATION_PREMIUM = active Dictation sub OR active Platform sub
+    #   WRITING_PREMIUM   = active Writing sub   OR active Platform sub
+    #
+    # Platform is an umbrella that grants both; it is never inferred from owning
+    # both products separately.
+
+    @staticmethod
+    def _sub_active(status: str | None, period_end: datetime | None) -> bool:
+        """Is one product's subscription currently granting access?"""
+        if status == "paid":
+            return True
+        if status == "canceled":
+            # Cancelled but still inside the paid period — access continues.
+            return bool(period_end and period_end > datetime.utcnow())
+        # 'expired', or never subscribed.
+        return False
+
     @property
-    def tier(self) -> str:
-        """Paid **dictation** access.
+    def products_migrated(self) -> bool:
+        """Has this account been written to by the per-product billing system?
 
-        This gates the dictation premium features — custom hotkey, transcription
-        language, live translation — and the priority transcription queue.
-
-        It previously looked only at subscription_status, ignoring which product was
-        bought. Because any active subscription sets that field, buying Writing
-        alone unlocked the whole of Dictation Pro for free. The two products are
-        strictly siloed everywhere else (the web app grants across products only for
-        'platform'), so the entitlement must be product-aware here too.
-
-        plan_product defaults to 'dictation', so customers who subscribed before the
-        column existed keep their access.
+        The per-product columns are authoritative the moment ANY of them is set.
+        The check is deliberately account-wide rather than per-product: once a
+        user has, say, a Writing subscription recorded, a NULL dictation status
+        means "no Dictation subscription", not "unknown, go ask the legacy
+        columns". Asking per-product instead would let the mirrored legacy
+        columns re-grant access to a product that was just cleared — buying
+        Writing would light up Dictation, which is exactly the bug this design
+        exists to prevent.
         """
-        if self.subscription_is_active and self.plan_product in ("dictation", "platform"):
-            return "paid"
-        return "trial"
+        return (
+            self.dictation_sub_status is not None
+            or self.writing_sub_status is not None
+            or self.platform_sub_status is not None
+        )
+
+    def _legacy_active(self, product: str) -> bool:
+        """Access implied by the old single-subscription columns.
+
+        Used only for accounts the per-product system has never touched, i.e.
+        ones that predate these columns or have not been backfilled yet. Without
+        it, deploying the code before the backfill would drop every existing
+        paying customer to trial.
+        """
+        if self.products_migrated:
+            return False
+        # plan_product is free text and has been written with varying case and
+        # stray whitespace, so compare it normalised — an exact match would drop
+        # those paying customers to trial. The backfill normalises identically.
+        return (self.subscription_is_active
+                and (self.plan_product or "").strip().lower() == product)
+
+    def materialize_legacy_products(self) -> bool:
+        """Snapshot legacy single-subscription access into the per-product columns.
+
+        Must run before the FIRST per-product write on an un-migrated account.
+        The per-product columns become authoritative as soon as any one of them
+        is set, so writing (say) writing_sub_status on a legacy account that was
+        paying for Dictation would otherwise strand that Dictation access: its
+        own column is still NULL and the legacy fallback has just switched off.
+
+        Copies the legacy status only onto the product plan_product names, and
+        only while it is genuinely active. Everything else stays NULL, which now
+        correctly means "no subscription for this product". No-op once migrated,
+        so it is safe to call on every write. Returns True if it wrote anything.
+        """
+        if self.products_migrated:
+            return False
+        product = (self.plan_product or "").strip().lower()
+        if product not in ("dictation", "writing", "platform"):
+            return False
+        if not self.subscription_is_active:
+            return False
+        status = (
+            "canceled"
+            if self.subscription_status == SubscriptionStatus.CANCELED
+            else "paid"
+        )
+        setattr(self, f"{product}_sub_status", status)
+        setattr(self, f"{product}_period_end", self.current_period_end)
+        setattr(self, f"{product}_sub_id", self.stripe_subscription_id)
+        return True
+
+    @property
+    def dictation_subscription_active(self) -> bool:
+        """An active Dictation subscription specifically — NOT Platform."""
+        if self.dictation_sub_status is None and not self.products_migrated:
+            return self._legacy_active("dictation")
+        return self._sub_active(self.dictation_sub_status, self.dictation_period_end)
+
+    @property
+    def writing_subscription_active(self) -> bool:
+        """An active Writing subscription specifically — NOT Platform."""
+        if self.writing_sub_status is None and not self.products_migrated:
+            return self._legacy_active("writing")
+        return self._sub_active(self.writing_sub_status, self.writing_period_end)
+
+    @property
+    def platform_subscription_active(self) -> bool:
+        """An active Platform subscription. Never inferred from owning both
+        products separately — that is two subscriptions, not Platform."""
+        if self.platform_sub_status is None and not self.products_migrated:
+            return self._legacy_active("platform")
+        return self._sub_active(self.platform_sub_status, self.platform_period_end)
+
+    @property
+    def dictation_is_paid(self) -> bool:
+        """DICTATION_PREMIUM."""
+        return self.dictation_subscription_active or self.platform_subscription_active
 
     @property
     def writing_is_paid(self) -> bool:
-        """Paid **writing** access — the mirror of `tier` for the other product.
-
-        The writing gates used to test plan_product on its own, with no check that
-        the subscription was still live. plan_product records what someone bought
-        and is never cleared when a subscription lapses, so anyone who had ever
-        held a Writing or Platform plan kept unlimited Writing forever: cancelling
-        correctly removed their Dictation premium, which does check, but left
-        Writing untouched.
+        """WRITING_PREMIUM.
 
         Deliberately excludes the free writing trial — callers that should honour
         the trial OR it with this in their own condition.
         """
-        return self.subscription_is_active and self.plan_product in ("writing", "platform")
+        return self.writing_subscription_active or self.platform_subscription_active
+
+    @property
+    def tier(self) -> str:
+        """Paid **dictation** access, in the string form the rest of the app and
+        the desktop client already expect.
+
+        Gates the dictation premium features — custom hotkey, transcription
+        language, live translation — and the priority transcription queue. Kept as
+        a thin alias over dictation_is_paid so no caller has to change.
+        """
+        return "paid" if self.dictation_is_paid else "trial"
+
+    @property
+    def owned_products(self) -> list[str]:
+        """Which subscriptions this account actually holds, for the billing page.
+
+        Platform appears only when a Platform subscription genuinely exists —
+        owning Dictation and Writing separately is two subscriptions and must not
+        be displayed as Platform.
+        """
+        owned = []
+        if self.dictation_subscription_active:
+            owned.append("dictation")
+        if self.writing_subscription_active:
+            owned.append("writing")
+        if self.platform_subscription_active:
+            owned.append("platform")
+        return owned
 
 
 class Session(Base):

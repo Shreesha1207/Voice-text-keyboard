@@ -134,11 +134,15 @@ def _writing_quota_for(user: User) -> int:
     """Return the monthly action limit for this user. 0 = unlimited."""
     if user.writing_is_paid:
         return UNLIMITED_QUOTA
-    if user.subscription_is_active:
-        # Paid dictation-only users get a generous but capped writing allowance.
-        # subscription_is_active rather than == PAID, so someone who cancelled but
-        # is still inside their paid period is not cut off early — which is what
-        # every other entitlement in the codebase does.
+    if user.dictation_is_paid:
+        # Paid Dictation customers get a generous but capped Writing allowance —
+        # a taste of the other product, not an entitlement to it.
+        #
+        # Was subscription_is_active, the account-wide flag. That granted the
+        # allowance for ANY active subscription, so it leaked across products;
+        # dictation_is_paid asks the specific question. It still covers someone
+        # who cancelled but is inside their paid period, as every other
+        # entitlement here does.
         return 100
     return FREE_WRITING_QUOTA
 

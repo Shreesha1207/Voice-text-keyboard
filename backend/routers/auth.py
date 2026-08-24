@@ -65,7 +65,14 @@ def _desktop_settings(user: User) -> dict:
         "is_translation_enabled": user.is_translation_enabled,
         "plan_product": user.plan_product,
         "writing_enabled": user.writing_is_paid or writing_trial_active(user),
-        "dictation_enabled": user.tier == "paid" or not user.is_trial_expired,
+        "dictation_enabled": user.dictation_is_paid or not user.is_trial_expired,
+        # Resolved per product. Deliberately not one account-wide "premium" flag:
+        # the two products are bought separately and either can be premium while
+        # the other is on trial.
+        "dictation_premium": user.dictation_is_paid,
+        "writing_premium": user.writing_is_paid,
+        "platform_active": user.platform_subscription_active,
+        "owned_products": user.owned_products,
     }
 
 
@@ -301,7 +308,7 @@ async def validate_status(current_user: User = Depends(get_current_user)):
             reason = "trial_active"
 
     # Compute entitlements
-    dictation_enabled = (current_user.tier == "paid") or trial_active
+    dictation_enabled = current_user.dictation_is_paid or trial_active
 
     # Writing access is governed by the WRITING trial only (writing_trial_started_at),
     # independent of the dictation/keyboard trial — do NOT couple it to trial_active.
@@ -323,6 +330,10 @@ async def validate_status(current_user: User = Depends(get_current_user)):
         preferred_language=current_user.preferred_language,
         is_translation_enabled=current_user.is_translation_enabled,
         plan_product=current_user.plan_product,
+        dictation_premium=current_user.dictation_is_paid,
+        writing_premium=current_user.writing_is_paid,
+        platform_active=current_user.platform_subscription_active,
+        owned_products=current_user.owned_products,
         writing_enabled=writing_enabled,
         dictation_enabled=dictation_enabled,
     )
@@ -366,6 +377,10 @@ async def get_me(current_user: User = Depends(get_current_user)):
         preferred_language=current_user.preferred_language,
         is_translation_enabled=current_user.is_translation_enabled,
         plan_product=current_user.plan_product,
+        dictation_premium=current_user.dictation_is_paid,
+        writing_premium=current_user.writing_is_paid,
+        platform_active=current_user.platform_subscription_active,
+        owned_products=current_user.owned_products,
         writing_enabled=writing_enabled,
         dictation_enabled=dictation_enabled,
     )

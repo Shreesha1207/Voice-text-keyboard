@@ -79,7 +79,176 @@ def _plan_product_from_subscription(sub_object: dict) -> str | None:
         )
     return None
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Per-product subscription writes
+#
+#  Every path that changes billing state goes through here. The point is that a
+#  write for one product can never touch another: buying Writing must not alter
+#  Dictation, and a Platform lapse must not disturb an independently owned
+#  Dictation subscription.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def apply_product_subscription(user, product: str, status: str,
+                               period_end=None, subscription_id=None) -> bool:
+    """Set one product's subscription state. Returns False for an unknown product."""
+    if product not in VALID_PLAN_PRODUCTS:
+        logger.error(
+            f"Refusing to apply subscription for unknown product {product!r}; "
+            f"expected one of {sorted(VALID_PLAN_PRODUCTS)}."
+        )
+        return False
+
+    # Un-migrated legacy account: carry its existing access into the per-product
+    # columns first, or this write would silently strand it (see the docstring).
+    if user.materialize_legacy_products():
+        logger.info(
+            f"Materialized legacy {user.plan_product!r} subscription into "
+            f"per-product columns for user {user.id} before applying {product!r}."
+        )
+
+    setattr(user, f"{product}_sub_status", status)
+    if period_end is not None:
+        setattr(user, f"{product}_period_end", period_end)
+    if subscription_id is not None:
+        setattr(user, f"{product}_sub_id", subscription_id)
+
+    _mirror_legacy_columns(user)
+    return True
+
+
+def _mirror_legacy_columns(user) -> None:
+    """Keep the old single-subscription columns roughly in step.
+
+    They are no longer the source of truth for entitlement — the per-product
+    columns are — but the billing status endpoint, the trial-expiry cron and
+    older clients still read them, so leaving them stale would be its own bug.
+
+    plan_product is a LABEL here, not an entitlement. It is set to 'platform'
+    only when a Platform subscription genuinely exists; owning Dictation and
+    Writing separately is two subscriptions and must never be relabelled as
+    Platform.
+    """
+    if user.platform_subscription_active:
+        user.plan_product = "platform"
+    elif user.dictation_subscription_active and not user.writing_subscription_active:
+        user.plan_product = "dictation"
+    elif user.writing_subscription_active and not user.dictation_subscription_active:
+        user.plan_product = "writing"
+    # Both owned separately, or none active: leave plan_product as the historical
+    # record of what was bought. It is not consulted for access any more.
+
+    # The account-wide status reflects whether ANY product is live, which is what
+    # the billing page and the trial cron mean by it.
+    ends = [e for e in (user.dictation_period_end, user.writing_period_end,
+                        user.platform_period_end) if e]
+    if user.dictation_is_paid or user.writing_is_paid:
+        statuses = {user.dictation_sub_status, user.writing_sub_status,
+                    user.platform_sub_status}
+        user.subscription_status = (
+            SubscriptionStatus.CANCELED if statuses == {"canceled"} or (
+                "canceled" in statuses and "paid" not in statuses)
+            else SubscriptionStatus.PAID
+        )
+        if ends:
+            user.current_period_end = max(ends)
+    elif any(st in ("expired", "canceled") for st in (
+            user.dictation_sub_status, user.writing_sub_status,
+            user.platform_sub_status)):
+        user.subscription_status = SubscriptionStatus.EXPIRED
+
+
+def _product_for_subscription(user, sub_object: dict, subscription_id: str | None) -> str | None:
+    """Work out which product a Stripe subscription belongs to.
+
+    Price ID first, because that is authoritative. Falling back to the stored
+    per-product subscription ids matters for events that carry no price data —
+    without it a cancellation would be applied to the wrong product, or to all
+    of them.
+    """
+    product = _plan_product_from_subscription(sub_object or {})
+    if product:
+        return product
+    if subscription_id:
+        for candidate in VALID_PLAN_PRODUCTS:
+            if getattr(user, f"{candidate}_sub_id", None) == subscription_id:
+                return candidate
+    return None
+
+
 router = APIRouter(prefix="/api/billing", tags=["Billing"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  GET /api/billing/products — the billing page's source of truth
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _product_state(user, product: str, trial_active: bool, trial_days_left):
+    """One product's state, resolved independently of the other two."""
+    sub_active = getattr(user, f"{product}_subscription_active")
+    status = getattr(user, f"{product}_sub_status")
+    if product == "platform":
+        return {
+            "product": "platform",
+            "state": "active" if sub_active else ("expired" if status in ("expired", "canceled") else "inactive"),
+            "subscription_active": sub_active,
+            "period_end": getattr(user, "platform_period_end"),
+        }
+
+    premium = getattr(user, f"{product}_is_paid")
+    if premium:
+        state = "premium"
+    elif trial_active:
+        state = "trial"
+    elif status in ("expired", "canceled"):
+        state = "expired"
+    else:
+        state = "free"
+    return {
+        "product": product,
+        "state": state,
+        "premium": premium,
+        # True only for a subscription to THIS product — Platform grants premium
+        # without the user owning a Dictation or Writing subscription, and the
+        # billing page must be able to tell those apart.
+        "own_subscription_active": sub_active,
+        "via_platform": premium and not sub_active,
+        "trial_active": trial_active,
+        "trial_days_remaining": trial_days_left,
+        "period_end": getattr(user, f"{product}_period_end"),
+    }
+
+
+@router.get("/products")
+async def get_product_entitlements(current_user: User = Depends(get_current_user)):
+    """Per-product billing state for all three offerings.
+
+    Exists because /status returns a single account-wide plan, which cannot
+    describe an account that is premium for one product and on trial for the
+    other — the exact case the billing page has to show.
+    """
+    from routers.auth import writing_trial_active, WRITING_TRIAL_DAYS
+
+    dict_trial = not current_user.is_trial_expired
+    dict_days = None
+    if dict_trial:
+        used = (datetime.utcnow() - current_user.trial_start_at).days
+        dict_days = max(0, 14 - used)
+
+    w_trial = writing_trial_active(current_user)
+    w_days = None
+    if w_trial and current_user.writing_trial_started_at:
+        used = (datetime.utcnow() - current_user.writing_trial_started_at.replace(tzinfo=None)).days
+        w_days = max(0, WRITING_TRIAL_DAYS - used)
+
+    return {
+        "dictation": _product_state(current_user, "dictation", dict_trial, dict_days),
+        "writing":   _product_state(current_user, "writing", w_trial, w_days),
+        "platform":  _product_state(current_user, "platform", False, None),
+        # Only subscriptions actually held. Owning Dictation and Writing
+        # separately is two subscriptions and must never be shown as Platform.
+        "owned_products": current_user.owned_products,
+    }
 
 @router.get("/status", response_model=BillingStatusResponse)
 async def get_billing_status(current_user: User = Depends(get_current_user)):
@@ -193,56 +362,87 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         return {"status": "ignored", "reason": "User not found"}
 
     if event_type == 'checkout.session.completed':
-        user.subscription_status = SubscriptionStatus.PAID
         user.stripe_customer_id = data_object.get('customer')
-        user.stripe_subscription_id = data_object.get('subscription')
-        # Fetch the full subscription to read the price_id → plan_product
         sub_id = data_object.get('subscription')
         if sub_id:
+            user.stripe_subscription_id = sub_id
+            product = None
             try:
                 sub = stripe.Subscription.retrieve(sub_id, expand=["items.data.price"])
                 product = _plan_product_from_subscription(sub)
-                if product:
-                    user.plan_product = product
             except Exception as e:
-                logger.warning(f"Could not fetch subscription for plan_product: {e}")
-        # We'll get current_period_end from the upcoming customer.subscription.updated event
+                logger.warning(f"Could not fetch subscription {sub_id} for its product: {e}")
+            if product:
+                # Only this product becomes paid. A Dictation purchase must not
+                # touch Writing, and must not consume the Writing trial.
+                apply_product_subscription(user, product, "paid", subscription_id=sub_id)
+            else:
+                logger.error(
+                    f"checkout.session.completed for {sub_id} could not be mapped to a "
+                    f"product; no entitlement granted. Check the STRIPE_*_PRICE_ID vars."
+                )
+        # current_period_end arrives with the following subscription.updated event
 
     elif event_type == 'customer.subscription.updated':
-        status = data_object.get('status')
-        if status in ['active', 'trialing']:
-            user.subscription_status = SubscriptionStatus.PAID
-            # Determine which product the subscription is for
-            product = _plan_product_from_subscription(data_object)
-            if product:
-                user.plan_product = product
-        elif status == 'past_due':
-            user.subscription_status = SubscriptionStatus.PAST_DUE
-        elif status == 'canceled':
-            user.subscription_status = SubscriptionStatus.CANCELED
-            
-        user.cancel_at_period_end = data_object.get('cancel_at_period_end', False)
-        
-        # Stripe sends timestamps in seconds
-        period_end = data_object.get('current_period_end')
-        if period_end:
-            user.current_period_end = datetime.fromtimestamp(period_end, tz=timezone.utc).replace(tzinfo=None)
+        sub_id = data_object.get('id')
+        product = _product_for_subscription(user, data_object, sub_id)
+        if not product:
+            logger.error(
+                f"customer.subscription.updated for {sub_id} could not be mapped to a "
+                f"product; ignoring rather than guessing and changing the wrong one."
+            )
+        else:
+            status = data_object.get('status')
+            period_end = data_object.get('current_period_end')
+            end_dt = (datetime.fromtimestamp(period_end, tz=timezone.utc).replace(tzinfo=None)
+                      if period_end else None)
+
+            if status in ('active', 'trialing'):
+                apply_product_subscription(user, product, "paid", end_dt, sub_id)
+            elif status == 'past_due':
+                # Still inside the paid period; Stripe retries. Not an entitlement
+                # change on its own — the period end decides.
+                apply_product_subscription(user, product, "canceled", end_dt, sub_id)
+                user.subscription_status = SubscriptionStatus.PAST_DUE
+            elif status in ('canceled', 'unpaid', 'incomplete_expired'):
+                apply_product_subscription(user, product, "canceled", end_dt, sub_id)
+
+            user.cancel_at_period_end = data_object.get('cancel_at_period_end', False)
 
     elif event_type == 'customer.subscription.deleted':
-        user.subscription_status = SubscriptionStatus.CANCELED
-        user.cancel_at_period_end = True
+        sub_id = data_object.get('id')
+        product = _product_for_subscription(user, data_object, sub_id)
+        if not product:
+            logger.error(
+                f"customer.subscription.deleted for {sub_id} could not be mapped to a "
+                f"product; ignoring. Cancelling the wrong product would remove access "
+                f"the customer is still paying for."
+            )
+        else:
+            # Deleted outright: access ends now, whatever the period said. Only
+            # this product — anything else the account owns is untouched.
+            apply_product_subscription(user, product, "expired", subscription_id=sub_id)
+            user.cancel_at_period_end = True
 
     elif event_type == 'invoice.payment_failed':
         user.subscription_status = SubscriptionStatus.PAST_DUE
 
     elif event_type == 'invoice.payment_succeeded':
-        # Extend the subscription period
         lines = data_object.get('lines', {}).get('data', [])
+        sub_id = data_object.get('subscription')
+        product = _product_for_subscription(user, {"items": {"data": lines}}, sub_id)
+        end_dt = None
         if lines:
             period_end = lines[0].get('period', {}).get('end')
             if period_end:
-                 user.current_period_end = datetime.fromtimestamp(period_end, tz=timezone.utc).replace(tzinfo=None)
-        user.subscription_status = SubscriptionStatus.PAID
+                end_dt = datetime.fromtimestamp(period_end, tz=timezone.utc).replace(tzinfo=None)
+        if product:
+            apply_product_subscription(user, product, "paid", end_dt, sub_id)
+        else:
+            logger.error(
+                f"invoice.payment_succeeded for subscription {sub_id} could not be "
+                f"mapped to a product; entitlement left unchanged."
+            )
 
     await db.commit()
     return {"status": "success"}
@@ -407,62 +607,78 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
             detail="No account matches that email address; subscription was not applied.",
         )
 
-    # 4. Map and Update Status
-    # active/trialing -> PAID, else map directly
-    if status_str in ["active", "trialing"]:
-        user.subscription_status = SubscriptionStatus.PAID
-    elif status_str == "past_due":
-        user.subscription_status = SubscriptionStatus.PAST_DUE
-    elif status_str == "canceled":
-        user.subscription_status = SubscriptionStatus.CANCELED
-    elif status_str == "expired":
-        user.subscription_status = SubscriptionStatus.EXPIRED
-    
-    # Update other fields.
-    # Only overwrite the Stripe identifiers when the payload actually carries them.
-    # A status-only sync (a cancellation or expiry, say) used to null them out, which
-    # broke that customer's billing portal AND stopped the Stripe webhook's
-    # customer-id fallback from ever matching them again.
+    # 4. Apply the subscription to the RIGHT product.
+    #
+    # A sync carries one product's subscription, so it must change only that
+    # product. Writing a shared status here is what made a Dictation purchase
+    # unlock Writing (and a Writing lapse remove Dictation).
+    STATUS_MAP = {
+        "active": "paid", "trialing": "paid",
+        "past_due": "canceled",          # still inside the paid period
+        "canceled": "canceled", "expired": "expired",
+    }
+    product_status = STATUS_MAP.get(status_str)
+    if product_status is None:
+        logger.error(
+            f"lovable-sync sent status={status_str!r} for {email!r}, which is not "
+            f"recognised. Nothing was changed."
+        )
+        raise HTTPException(status_code=400, detail=f"Unknown status: {status_str}")
+
     if customer_id := data.get("stripe_customer_id"):
         user.stripe_customer_id = customer_id
-    if subscription_id := data.get("stripe_subscription_id"):
+    subscription_id = data.get("stripe_subscription_id") or None
+    if subscription_id:
         user.stripe_subscription_id = subscription_id
     user.cancel_at_period_end = data.get("cancel_at_period_end", False)
 
-    # Update plan_product if provided by the Lovable sync payload.
-    #
-    # This compared the raw string against the tuple and did nothing at all when
-    # it did not match — no error, no log line. So "Platform", "PLATFORM", or a
-    # value with a stray space was silently discarded and plan_product stayed at
-    # its default of "dictation". The account then behaved as dictation-only:
-    # Dictation Pro worked, Writing never unlocked, and nothing said why.
-    raw_product = data.get("plan_product")
-    if raw_product is not None:
-        normalised = str(raw_product).strip().lower()
-        if normalised in VALID_PLAN_PRODUCTS:
-            user.plan_product = normalised
-        else:
-            logger.error(
-                f"Billing sync sent plan_product={raw_product!r}, which is not one "
-                f"of {sorted(VALID_PLAN_PRODUCTS)}. Ignoring it — this account "
-                f"keeps plan_product={user.plan_product!r}, so whichever product "
-                f"it does not already own stays locked."
-            )
-    
     period_end = data.get("current_period_end")
+    end_dt = None
     if period_end:
         try:
-            # Handle ISO format from Lovable (e.g. 2026-06-13T00:00:00Z)
-            # Remove Z and replace with +00:00 for fromisoformat, then strip tz for naive DateTime
-            dt = datetime.fromisoformat(period_end.replace('Z', '+00:00'))
-            user.current_period_end = dt.replace(tzinfo=None)
+            # ISO from Lovable, e.g. 2026-06-13T00:00:00Z
+            end_dt = datetime.fromisoformat(str(period_end).replace('Z', '+00:00')).replace(tzinfo=None)
         except (ValueError, TypeError):
-            pass
+            logger.warning(f"lovable-sync: could not parse current_period_end={period_end!r}")
+
+    # Which product? Same normalisation as before: casing and stray whitespace
+    # were silently discarding the value, leaving the account dictation-only.
+    raw_product = data.get("plan_product")
+    normalised = str(raw_product).strip().lower() if raw_product is not None else None
+    if normalised is not None and normalised not in VALID_PLAN_PRODUCTS:
+        logger.error(
+            f"lovable-sync sent plan_product={raw_product!r}, which is not one of "
+            f"{sorted(VALID_PLAN_PRODUCTS)}. Nothing was changed for {email!r}."
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown plan_product: {raw_product}. Expected one of "
+                   f"{sorted(VALID_PLAN_PRODUCTS)}.",
+        )
+
+    if normalised is None:
+        # No product named. Historically this meant Dictation, which was the only
+        # product that existed — keep that reading rather than guessing, but say so.
+        normalised = "dictation"
+        logger.warning(
+            f"lovable-sync for {email!r} carried no plan_product; assuming "
+            f"'dictation' for backwards compatibility."
+        )
+
+    apply_product_subscription(user, normalised, product_status, end_dt, subscription_id)
+    logger.info(
+        f"lovable-sync applied: {email} {normalised}={product_status} "
+        f"(dictation_premium={user.dictation_is_paid}, "
+        f"writing_premium={user.writing_is_paid}, "
+        f"platform_active={user.platform_subscription_active})"
+    )
 
     await audit.record(
         db, audit.BILLING_SYNC_APPLIED, user_id=user.id, email=user.email, request=request,
-        detail=f"status={status_str} plan_product={user.plan_product} "
-               f"subscription_status={user.subscription_status.value}",
+        detail=f"status={status_str} product={normalised} "
+               f"dictation_premium={user.dictation_is_paid} "
+               f"writing_premium={user.writing_is_paid} "
+               f"platform_active={user.platform_subscription_active}",
     )
     await db.commit()
     # Echo what was actually stored, plus the resulting entitlements. The caller
@@ -471,8 +687,137 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
     return {
         "status": "success",
         "user_id": str(user.id),
-        "plan_product": user.plan_product,
+        "product_applied": normalised,
         "subscription_status": user.subscription_status.value,
-        "dictation_premium": user.tier == "paid",
+        # The three answers that matter, so a caller can see exactly what its
+        # sync did rather than inferring it from a bare "success".
+        "dictation_premium": user.dictation_is_paid,
         "writing_premium": user.writing_is_paid,
+        "platform_active": user.platform_subscription_active,
+        "owned_products": user.owned_products,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Development-only entitlement simulator
+#
+#  Lets every combination in the test matrix be set without a real Stripe
+#  payment. Registered ONLY when ENVIRONMENT is explicitly a development value,
+#  so in production the route does not exist at all — a 404, not a 403 that
+#  depends on a check inside the handler being right.
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEV_ENVIRONMENTS = {"development", "dev", "local", "test", "testing"}
+
+
+def dev_billing_enabled() -> bool:
+    return (os.getenv("ENVIRONMENT") or "").strip().lower() in DEV_ENVIRONMENTS
+
+
+if dev_billing_enabled():
+
+    _SIM_PRODUCT_STATES = {
+        # state name -> (sub_status, period_end offset in days or None)
+        "free":    (None, None),
+        "premium": ("paid", 30),
+        "expired": ("expired", -1),
+        # Cancelled but still inside the paid period — access continues.
+        "canceling": ("canceled", 7),
+    }
+
+    @router.post("/dev/simulate")
+    async def simulate_entitlements(
+        payload: dict = Body(...),
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        """Force this account into a given entitlement combination.
+
+        Body, all optional:
+            {"dictation": "free|trial|premium|expired|canceling",
+             "writing":   "free|trial|premium|expired|canceling",
+             "platform":  "inactive|active|expired"}
+
+        Only the products named are touched, so a test can change one and
+        confirm the others are unaffected — which is the whole point.
+        """
+        now = datetime.utcnow()
+        applied = {}
+
+        # Preserve whatever a legacy account already had, so products the caller
+        # does NOT name keep their current access instead of vanishing the moment
+        # the first per-product column is written.
+        current_user.materialize_legacy_products()
+
+        for product in ("dictation", "writing"):
+            want = payload.get(product)
+            if want is None:
+                continue
+            want = str(want).strip().lower()
+
+            if want == "trial":
+                # Trials are tracked separately from subscriptions, so clear the
+                # subscription and (re)start this product's own trial clock.
+                setattr(current_user, f"{product}_sub_status", None)
+                setattr(current_user, f"{product}_period_end", None)
+                if product == "dictation":
+                    current_user.trial_start_at = now
+                else:
+                    current_user.writing_trial_started_at = now
+            elif want in _SIM_PRODUCT_STATES:
+                status, days = _SIM_PRODUCT_STATES[want]
+                setattr(current_user, f"{product}_sub_status", status)
+                setattr(current_user, f"{product}_period_end",
+                        now + timedelta(days=days) if days is not None else None)
+                if want == "free":
+                    # Expire this product's trial too, or "free" still reads as trial.
+                    if product == "dictation":
+                        current_user.trial_start_at = now - timedelta(days=365)
+                    else:
+                        current_user.writing_trial_started_at = now - timedelta(days=365)
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown {product} state {want!r}. Expected one of "
+                           f"{['trial'] + sorted(_SIM_PRODUCT_STATES)}.",
+                )
+            applied[product] = want
+
+        want = payload.get("platform")
+        if want is not None:
+            want = str(want).strip().lower()
+            mapping = {"inactive": (None, None), "active": ("paid", 30),
+                       "expired": ("expired", -1), "canceling": ("canceled", 7)}
+            if want not in mapping:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown platform state {want!r}. Expected one of "
+                           f"{sorted(mapping)}.",
+                )
+            status, days = mapping[want]
+            current_user.platform_sub_status = status
+            current_user.platform_period_end = (
+                now + timedelta(days=days) if days is not None else None)
+            applied["platform"] = want
+
+        if not current_user.products_migrated:
+            # Every product was simulated back to "no subscription". The account
+            # now looks un-migrated, so the legacy fallback would re-grant exactly
+            # what was just cleared — clear the legacy columns to match.
+            current_user.subscription_status = SubscriptionStatus.TRIAL
+            current_user.current_period_end = None
+            current_user.stripe_subscription_id = None
+
+        _mirror_legacy_columns(current_user)
+        await db.commit()
+        await db.refresh(current_user)
+
+        logger.info(f"[dev] simulated entitlements for {current_user.email}: {applied}")
+        return {
+            "applied": applied,
+            "dictation_premium": current_user.dictation_is_paid,
+            "writing_premium": current_user.writing_is_paid,
+            "platform_active": current_user.platform_subscription_active,
+            "owned_products": current_user.owned_products,
+            "tier": current_user.tier,
+        }
