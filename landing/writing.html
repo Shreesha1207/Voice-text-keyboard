@@ -1,0 +1,1484 @@
+<title>Xvoice Writing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+
+<style>
+/* ══════════════════════════════════════════════════════════════
+   Xvoice Writing — xvoicekeyboard.com/writing
+
+   This page commits to a single visual world on purpose: the
+   espresso-and-sand chrome of the Writing menu itself, straight
+   out of writing/ui/qt_helpers.py —
+     BG_COLOR    #2B1B17   "deep espresso"
+     HOVER_COLOR #3B2620
+     TEXT_COLOR  #E8B89C   "warm sand"
+     DIM_COLOR   #6B4A3A
+   The product's UI is dark, so the page is dark, and every color
+   is painted explicitly rather than inherited from the host.
+
+   Flat fills only — no gradients, no radius above 4px, no drop
+   shadows on content. The two elements that carry a shadow are
+   the floating button and the preview panel, because in the real
+   app those genuinely float above the document.
+   ══════════════════════════════════════════════════════════════ */
+
+:root {
+  --ground:    #201410;
+  --surface:   #2B1B17;
+  --surface-2: #3B2620;
+  --surface-3: #4A3128;
+  --line:      #48322A;
+  --line-2:    #5E4136;
+
+  --text:      #F4E2D6;
+  --text-2:    #D6B7A2;
+  --muted:     #A0765C;
+
+  --sand:      #E8B89C;
+  --sand-lo:   #C9927A;
+
+  --good:      #6FB97C;
+
+  /* the preview panel keeps the app's VS Code-ish palette */
+  --vs-bg:     #1E1E1E;
+  --vs-head:   #252526;
+  --vs-text:   #D4D4D4;
+  --vs-accent: #569CD6;
+  --vs-accept: #0E7A0D;
+  --vs-border: #3C3C3C;
+
+  --maxw: 1180px;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.58;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 {
+  font-family: "Archivo", ui-sans-serif, system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.028em;
+  text-wrap: balance;
+  margin: 0;
+  line-height: 1.06;
+  color: #FBEDE2;
+}
+p { margin: 0; }
+a { color: inherit; }
+
+.mono, .m {
+  font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── shell ─────────────────────────────────────────────── */
+.wrap { max-width: var(--maxw); margin: 0 auto; padding-left: 20px; padding-right: 20px; }
+.band { padding-block: clamp(52px, 7vw, 94px); border-top: 1px solid var(--line); }
+.band--deep { background: var(--surface); }
+
+.head { display: grid; grid-template-columns: 210px 1fr; gap: 24px 36px; align-items: start; }
+@media (max-width: 860px) { .head { grid-template-columns: 1fr; gap: 14px; } }
+
+.head__label {
+  font-family: "IBM Plex Mono", monospace;
+  font-weight: 600;
+  font-size: 11.5px;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-top: 8px;
+  border-top: 2px solid var(--sand);
+  display: block;
+}
+.head h2 { font-size: clamp(27px, 3.9vw, 46px); max-width: 19ch; }
+.lede { font-size: clamp(16.5px, 1.7vw, 18.5px); color: var(--text-2); max-width: 64ch; margin-top: 18px; }
+
+/* ── header ────────────────────────────────────────────── */
+.topbar {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 60;
+  background: var(--ground);
+  border-bottom: 1px solid var(--line-2);
+}
+.topbar__in { max-width: var(--maxw); margin: 0 auto; padding: 10px 20px; display: flex; align-items: center; gap: 16px; }
+.brand {
+  display: flex; align-items: center; gap: 9px;
+  font-family: "Archivo", sans-serif; font-weight: 800; font-size: 19px;
+  letter-spacing: -0.035em; text-decoration: none; flex: none; color: var(--text);
+}
+.brand__mark { width: 22px; height: 22px; flex: none; color: var(--sand); }
+.brand__sub {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--sand); border-left: 1px solid var(--line-2); padding-left: 10px; margin-left: 2px;
+}
+.nav { display: flex; gap: 2px; margin-left: auto; flex-wrap: wrap; }
+.nav a {
+  text-decoration: none; color: var(--text-2);
+  font-family: "IBM Plex Mono", monospace; font-size: 12.5px; font-weight: 500;
+  padding: 6px 10px; border: 1px solid transparent;
+}
+.nav a:hover { color: var(--sand); border-color: var(--line-2); }
+@media (max-width: 940px) { .nav { display: none; } }
+
+/* ── buttons ───────────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 11px 20px; border-radius: 2px;
+  font-family: "IBM Plex Sans", sans-serif; font-weight: 600; font-size: 15px;
+  text-decoration: none; cursor: pointer;
+  background: var(--sand); border: 1px solid var(--sand); color: var(--surface);
+  transition: background .14s ease, color .14s ease, border-color .14s ease;
+}
+.btn:hover { background: #F5D3BC; border-color: #F5D3BC; }
+.btn:focus-visible { outline: 2px solid var(--vs-accent); outline-offset: 2px; }
+.btn--ghost { background: transparent; color: var(--text); border-color: var(--line-2); }
+.btn--ghost:hover { background: transparent; color: var(--sand); border-color: var(--sand); }
+.btn--sm { padding: 7px 14px; font-size: 13.5px; }
+.cta-row { display: flex; flex-wrap: wrap; gap: 10px; }
+
+/* ── hero ──────────────────────────────────────────────── */
+.hero { padding-block: clamp(38px, 5vw, 64px) clamp(46px, 6vw, 80px); }
+.mantra {
+  display: flex; align-items: baseline; gap: 14px;
+  padding-bottom: 12px; margin-bottom: 26px;
+  border-bottom: 1px solid var(--line-2); flex-wrap: wrap;
+}
+.mantra__tag {
+  font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: 10.5px;
+  letter-spacing: .17em; text-transform: uppercase; color: var(--muted); flex: none;
+}
+.mantra__text {
+  font-family: "Archivo", sans-serif; font-weight: 700;
+  font-size: clamp(15px, 1.9vw, 17.5px); letter-spacing: -0.02em; color: var(--text);
+}
+
+.hero__grid { display: grid; grid-template-columns: 1.02fr .98fr; gap: clamp(28px, 4vw, 52px); align-items: start; }
+@media (max-width: 1000px) { .hero__grid { grid-template-columns: 1fr; } }
+
+.hero h1 { font-size: clamp(33px, 4.5vw, 55px); max-width: 17ch; }
+.hero h1 u { text-decoration: none; box-shadow: inset 0 -0.055em 0 var(--sand); }
+.hero__sub { margin-top: 22px; font-size: clamp(16.5px, 2vw, 19.5px); color: var(--text-2); max-width: 52ch; }
+.hero__cta { margin-top: 28px; }
+
+.specline {
+  margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--line);
+  display: flex; flex-wrap: wrap; gap: 8px 22px;
+  font-family: "IBM Plex Mono", monospace; font-size: 11.5px; font-weight: 500;
+  color: var(--muted); letter-spacing: .02em;
+}
+.specline span { display: inline-flex; align-items: center; gap: 7px; }
+.specline span::before { content: ""; width: 6px; height: 6px; background: var(--sand); flex: none; }
+
+/* ── the demo ──────────────────────────────────────────── */
+.doc { background: #FFFDFB; border: 1px solid var(--line-2); }
+.doc__chrome {
+  padding: 8px 13px; background: #F0E7E0; border-bottom: 1px solid #DFCFC3;
+  display: flex; align-items: center; gap: 10px;
+  font-family: "IBM Plex Mono", monospace; font-size: 11px; color: #8A6E5D; letter-spacing: .05em;
+}
+.doc__chrome b { width: 7px; height: 7px; background: #CFB9AB; flex: none; display: block; }
+.doc__body { padding: 20px 20px 24px; position: relative; min-height: 250px; }
+.doc__text { color: #2B1B17; font-size: 15.5px; line-height: 1.6; margin: 0; }
+.doc__text.is-selected { background: #BFD6F5; box-shadow: 0 0 0 2px #BFD6F5; }
+.doc__text.is-working { opacity: .3; }
+
+.floatbtn {
+  position: absolute; display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px 5px 7px;
+  background: var(--surface); color: var(--sand);
+  border: 1px solid var(--sand-lo); border-radius: 3px;
+  font-family: "IBM Plex Mono", monospace; font-size: 11.5px; font-weight: 600;
+  cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,.4); z-index: 5;
+}
+.floatbtn svg { width: 13px; height: 13px; flex: none; }
+.floatbtn:focus-visible { outline: 2px solid var(--vs-accent); outline-offset: 2px; }
+
+.actionmenu {
+  position: absolute; z-index: 6; min-width: 224px;
+  background: var(--surface); border: 1px solid var(--line-2); border-radius: 4px;
+  padding: 5px; box-shadow: 0 14px 38px rgba(0,0,0,.55);
+}
+.actionmenu__t {
+  font-family: "IBM Plex Mono", monospace; font-size: 10px; letter-spacing: .14em;
+  color: var(--muted); padding: 6px 9px; text-transform: uppercase; font-weight: 600;
+}
+.actionmenu button {
+  display: block; width: 100%; background: transparent; border: 0; border-radius: 3px;
+  color: var(--sand); text-align: left; padding: 7px 9px;
+  font-family: "IBM Plex Sans", sans-serif; font-size: 13.5px; cursor: pointer;
+}
+.actionmenu button:hover, .actionmenu button:focus-visible { background: var(--surface-2); outline: none; }
+.actionmenu__sep { height: 1px; background: var(--line-2); margin: 5px 8px; }
+.tonerow { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 8px 7px; }
+.tonerow button {
+  width: auto; flex: none;
+  font-family: "IBM Plex Mono", monospace; font-size: 10.5px;
+  padding: 3px 7px; border: 1px solid var(--line-2); color: var(--text-2);
+}
+.tonerow button[aria-pressed="true"] { border-color: var(--sand); color: var(--sand); background: var(--surface-2); }
+
+/* preview panel — the app's own VS Code-ish styling */
+.preview {
+  margin-top: 14px; background: var(--vs-bg); border: 1px solid var(--vs-border);
+  box-shadow: 0 14px 38px rgba(0,0,0,.5);
+}
+.preview__head {
+  background: var(--vs-head); border-bottom: 1px solid var(--vs-border);
+  padding: 8px 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--vs-accent); font-weight: 600;
+}
+.preview__timer { margin-left: auto; color: #7E7E7E; letter-spacing: .04em; }
+.preview__body {
+  padding: 13px 13px 14px; color: var(--vs-text);
+  font-family: "IBM Plex Mono", monospace; font-size: 12.5px; line-height: 1.62;
+  max-height: 190px; overflow-y: auto; white-space: pre-wrap;
+}
+.preview__foot { display: flex; gap: 8px; padding: 0 13px 13px; flex-wrap: wrap; }
+.vsbtn {
+  font-family: "IBM Plex Sans", sans-serif; font-size: 12.5px; font-weight: 600;
+  padding: 6px 14px; border-radius: 2px; cursor: pointer;
+  border: 1px solid var(--vs-border); background: #333; color: var(--vs-text);
+}
+.vsbtn--accept { background: var(--vs-accept); border-color: var(--vs-accept); color: #fff; }
+
+.demohint { margin-top: 13px; font-size: 13px; color: var(--muted); line-height: 1.5; }
+
+/* ── ruled grids ───────────────────────────────────────── */
+.rg { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); margin-top: 40px; }
+.rg > * { background: var(--surface); padding: 22px 20px 24px; }
+.band--deep .rg > * { background: var(--surface-2); }
+.rg--2 { grid-template-columns: repeat(2, 1fr); }
+.rg--3 { grid-template-columns: repeat(3, 1fr); }
+.rg--4 { grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 1000px) { .rg--3, .rg--4 { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 660px)  { .rg--2, .rg--3, .rg--4 { grid-template-columns: 1fr; } }
+
+.cell__k {
+  font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--sand); font-weight: 600; display: block; margin-bottom: 11px;
+}
+.cell h3 { font-size: 17.5px; font-weight: 700; letter-spacing: -0.018em; margin-bottom: 9px; line-height: 1.22; }
+.cell p { font-size: 14.5px; color: var(--text-2); }
+
+/* ── actions table ─────────────────────────────────────── */
+.actions { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); margin-top: 38px; }
+.actions__row {
+  background: var(--surface); padding: 16px 18px;
+  display: grid; grid-template-columns: 30px 190px 1fr 96px; gap: 18px; align-items: baseline;
+}
+.band--deep .actions__row { background: var(--surface-2); }
+@media (max-width: 860px) {
+  .actions__row { grid-template-columns: 26px 1fr; gap: 6px 14px; }
+  .actions__d { grid-column: 2; }
+  .actions__tag { grid-column: 2; }
+}
+.actions__ico { font-size: 16px; line-height: 1.3; }
+.actions__n { font-weight: 600; font-size: 15px; }
+.actions__d { font-size: 14px; color: var(--text-2); }
+.actions__tag {
+  font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .1em;
+  color: var(--muted); text-transform: uppercase; text-align: right;
+}
+@media (max-width: 860px) { .actions__tag { text-align: left; } }
+
+/* ── tones ─────────────────────────────────────────────── */
+.tones { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-top: 30px; }
+@media (max-width: 900px) { .tones { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 500px) { .tones { grid-template-columns: 1fr; } }
+.tone { background: var(--surface); padding: 17px 16px 19px; }
+.band--deep .tone { background: var(--surface-2); }
+.tone__n {
+  font-family: "IBM Plex Mono", monospace; font-size: 12px; font-weight: 600;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--sand); margin-bottom: 8px;
+}
+.tone__d { font-size: 13.5px; color: var(--text-2); line-height: 1.45; }
+
+/* ── languages ─────────────────────────────────────────── */
+.langs {
+  margin-top: 26px; border: 1px solid var(--line); background: var(--surface);
+  padding: 20px 20px 22px;
+}
+.band--deep .langs { background: var(--surface-2); }
+.langs__t {
+  font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--muted); font-weight: 600;
+  padding-bottom: 9px; margin-bottom: 14px; border-bottom: 1px solid var(--line);
+}
+.langs__list {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(146px, 1fr));
+  gap: 6px 14px;
+  font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--text-2);
+}
+.langs__list span.built { color: var(--sand); font-weight: 600; }
+.langs + .langs { margin-top: 16px; }
+
+/* ── stats ─────────────────────────────────────────────── */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-top: 30px; }
+.stat { background: var(--surface); padding: 17px 16px; }
+.band--deep .stat { background: var(--surface-2); }
+.stat__v { font-family: "Archivo", sans-serif; font-weight: 800; font-size: 24px; letter-spacing: -0.035em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stat__l { font-size: 12.5px; color: var(--muted); margin-top: 3px; line-height: 1.35; }
+
+/* ── table ─────────────────────────────────────────────── */
+.tablewrap { overflow-x: auto; margin-top: 34px; border: 1px solid var(--line); background: var(--surface); }
+.band--deep .tablewrap { background: var(--surface-2); }
+table { border-collapse: collapse; width: 100%; min-width: 620px; }
+th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 14.5px; vertical-align: top; }
+thead th {
+  font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .13em;
+  text-transform: uppercase; color: var(--muted); font-weight: 600;
+  background: var(--ground); border-bottom-color: var(--line-2);
+}
+.band--deep thead th { background: var(--surface); }
+tbody tr:last-child td { border-bottom: 0; }
+td.y { color: var(--good); font-weight: 600; }
+td.n { color: var(--muted); }
+td small { display: block; font-family: "IBM Plex Mono", monospace; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+/* ── plans ─────────────────────────────────────────────── */
+.plans { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-top: 38px; }
+@media (max-width: 920px) { .plans { grid-template-columns: 1fr; } }
+.plan { background: var(--surface); padding: 24px 22px 26px; display: flex; flex-direction: column; gap: 15px; }
+.band--deep .plan { background: var(--surface-2); }
+.plan--mid { box-shadow: inset 0 3px 0 var(--sand); }
+.plan__name { font-family: "Archivo", sans-serif; font-weight: 800; font-size: 22px; letter-spacing: -0.03em; color: #FBEDE2; }
+.plan__for { font-size: 13.5px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
+.plan ul { margin: 0; padding: 0; list-style: none; }
+.plan li { font-size: 14px; color: var(--text-2); padding: 8px 0 8px 18px; border-bottom: 1px solid var(--line); position: relative; line-height: 1.42; }
+.plan li:last-child { border-bottom: 0; }
+.plan li::before { content: ""; position: absolute; left: 0; top: 15px; width: 8px; height: 1px; background: var(--sand); }
+.plan .btn { margin-top: auto; }
+
+/* ── spec ──────────────────────────────────────────────── */
+.spec { margin-top: 32px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 0 44px; }
+@media (max-width: 820px) { .spec { grid-template-columns: 1fr; } }
+.spec__row { display: flex; justify-content: space-between; gap: 18px; padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+.spec__k { color: var(--muted); flex: none; }
+.spec__v { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; text-align: right; color: var(--text); word-break: break-word; }
+
+code.inline {
+  font-family: "IBM Plex Mono", monospace; font-size: .87em;
+  background: rgba(232,184,156,.08); border: 1px solid var(--line-2);
+  padding: 1px 5px; word-break: break-word; color: #EDD1BD;
+}
+
+/* ── FAQ ───────────────────────────────────────────────── */
+.faq { margin-top: 34px; border-top: 1px solid var(--line); }
+details { border-bottom: 1px solid var(--line); }
+summary {
+  cursor: pointer; padding: 15px 2px; font-weight: 600; font-size: 15.5px;
+  list-style: none; display: flex; justify-content: space-between; gap: 16px; align-items: center;
+}
+summary::-webkit-details-marker { display: none; }
+summary::after { content: "+"; font-family: "IBM Plex Mono", monospace; color: var(--sand); font-size: 17px; flex: none; line-height: 1; }
+details[open] summary::after { content: "\2212"; }
+summary:focus-visible { outline: 2px solid var(--sand); outline-offset: -2px; }
+details > p { padding: 0 2px 17px; font-size: 14.5px; color: var(--text-2); max-width: 76ch; }
+
+/* ── closer ────────────────────────────────────────────── */
+.closer {
+  background: var(--sand); color: var(--surface);
+  padding: clamp(36px, 5vw, 62px) clamp(22px, 4vw, 54px);
+  display: grid; grid-template-columns: 1.3fr 1fr; gap: 30px; align-items: end;
+}
+@media (max-width: 820px) { .closer { grid-template-columns: 1fr; align-items: start; } }
+.closer h2 { font-size: clamp(27px, 4vw, 44px); color: var(--surface); max-width: 16ch; }
+.closer p { font-size: 16.5px; color: #5A3B2E; max-width: 46ch; margin-top: 16px; }
+.closer .btn { background: var(--surface); border-color: var(--surface); color: var(--sand); }
+.closer .btn:hover { background: #1A100D; border-color: #1A100D; }
+.closer .btn--ghost { background: transparent; color: var(--surface); border-color: rgba(43,27,23,.4); }
+.closer .btn--ghost:hover { background: transparent; color: var(--surface); border-color: var(--surface); }
+
+/* ── footer ────────────────────────────────────────────── */
+.foot { border-top: 1px solid var(--line); padding-block: 40px 52px; font-size: 14px; color: var(--muted); }
+.foot__grid { display: grid; grid-template-columns: 1.7fr 1fr 1fr 1fr; gap: 28px; }
+@media (max-width: 820px) { .foot__grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 480px) { .foot__grid { grid-template-columns: 1fr; } }
+.foot h4 {
+  font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--text); font-weight: 600;
+  margin-bottom: 13px; padding-bottom: 7px; border-bottom: 1px solid var(--line);
+}
+.foot ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.foot a { text-decoration: none; }
+.foot a:hover { color: var(--sand); }
+.foot__legal {
+  margin-top: 34px; padding-top: 18px; border-top: 1px solid var(--line);
+  display: flex; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  font-family: "IBM Plex Mono", monospace; font-size: 11.5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}
+</style>
+
+<header class="topbar">
+  <div class="topbar__in">
+    <a class="brand" href="#top">
+      <svg class="brand__mark" viewBox="0 0 64 64" aria-hidden="true">
+        <rect x="22" y="6" width="20" height="30" rx="10" fill="currentColor"></rect>
+        <path d="M14 30 a18 16 0 0 0 36 0" fill="none" stroke="currentColor" stroke-width="5"></path>
+        <path d="M32 50 v9 M22 59 h20" stroke="currentColor" stroke-width="5" stroke-linecap="square"></path>
+      </svg>
+      Xvoice
+      <span class="brand__sub">Writing</span>
+    </a>
+    <nav class="nav">
+      <a href="#how">How it works</a>
+      <a href="#actions">Actions</a>
+      <a href="#languages">Languages</a>
+      <a href="#plans">Plans</a>
+      <a href="#privacy">Privacy</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://xvoicekeyboard.com">Dictation &#8599;</a>
+    </nav>
+    <a class="btn btn--sm" href="https://xvoicekeyboard.com/download">Download</a>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- ── HERO ──────────────────────────────────────────── -->
+  <section class="hero wrap">
+    <div class="mantra">
+      <span class="mantra__tag">Mantra</span>
+      <span class="mantra__text">Design something that&rsquo;s perfect.</span>
+    </div>
+
+    <div class="hero__grid">
+      <div>
+        <h1>Every text box on your computer, <u>with an editor behind it.</u></h1>
+
+        <p class="hero__sub">
+          Highlight any text in any application. A small Xvoice button appears. Click it, pick an
+          action, and the rewrite goes back exactly where the original was &mdash; same document, same
+          cursor, same formatting.
+        </p>
+
+        <div class="cta-row hero__cta">
+          <a class="btn" href="https://xvoicekeyboard.com/download">Start the 14-day trial</a>
+          <a class="btn btn--ghost" href="#how">See how it works</a>
+        </div>
+
+        <div class="specline">
+          <span>10 actions</span>
+          <span>60 languages</span>
+          <span>5 tones</span>
+          <span>Works in any app</span>
+          <span>No API key required</span>
+        </div>
+      </div>
+
+      <div>
+        <div class="doc">
+          <div class="doc__chrome">
+            <b></b>
+            <span>reply-to-client.eml</span>
+          </div>
+          <div class="doc__body">
+            <p class="doc__text" id="docText">hi so basically we cant get the thing done by friday becuase the api stuff
+              is taking way longer than we thought, sorry about that. we can probably do it by next
+              wednesday if thats ok with you?</p>
+
+            <button class="floatbtn" id="floatBtn" hidden style="left:20px;top:170px;">
+              <svg viewBox="0 0 64 64" aria-hidden="true">
+                <rect x="22" y="6" width="20" height="30" rx="10" fill="currentColor"></rect>
+                <path d="M14 30 a18 16 0 0 0 36 0" fill="none" stroke="currentColor" stroke-width="6"></path>
+              </svg>
+              Xvoice
+            </button>
+
+            <div class="actionmenu" id="actionMenu" hidden style="left:20px;top:170px;">
+              <div class="actionmenu__t">Xvoice Writing</div>
+              <button data-action="improve">&#10024;&nbsp; Improve writing</button>
+              <button data-action="professional">&#128188;&nbsp; Professional tone</button>
+              <button data-action="shorten">&#128203;&nbsp; Make it shorter</button>
+              <button data-action="translate">&#127760;&nbsp; Translate &#9656;</button>
+              <button data-action="fix_grammar">&#128221;&nbsp; Fix grammar</button>
+              <button data-action="summarise">&#128202;&nbsp; Summarize</button>
+              <div class="actionmenu__sep"></div>
+              <div class="actionmenu__t" style="padding-bottom:3px;">Tone</div>
+              <div class="tonerow" id="toneRow">
+                <button data-tone="neutral" aria-pressed="true">neutral</button>
+                <button data-tone="professional" aria-pressed="false">professional</button>
+                <button data-tone="friendly" aria-pressed="false">friendly</button>
+                <button data-tone="confident" aria-pressed="false">confident</button>
+                <button data-tone="casual" aria-pressed="false">casual</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="preview" id="preview" hidden>
+          <div class="preview__head">
+            <span id="previewAction">Improve writing</span>
+            <span class="preview__timer" id="previewTimer">closes in 12s</span>
+          </div>
+          <div class="preview__body" id="previewBody"></div>
+          <div class="preview__foot">
+            <button class="vsbtn vsbtn--accept" id="acceptBtn">Accept</button>
+            <button class="vsbtn" id="dismissBtn">Dismiss</button>
+          </div>
+        </div>
+
+        <div class="cta-row" style="margin-top:14px;">
+          <button class="btn btn--ghost btn--sm" id="selectBtn">Select the paragraph</button>
+          <button class="btn btn--ghost btn--sm" id="resetBtn">Reset</button>
+        </div>
+
+        <p class="demohint">
+          A working sketch of the real flow, right down to the 12-second preview timeout. In the app
+          this happens over whatever window you are actually in.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── HOW IT WORKS ──────────────────────────────────── -->
+  <section class="band band--deep" id="how">
+    <div class="wrap">
+      <div class="head">
+        <span class="head__label">How it works</span>
+        <div>
+          <h2>Four steps, and it never guesses what you meant.</h2>
+          <p class="lede">
+            The Writing engine is deliberately unhurried about touching your machine. It does not
+            watch your selections, it does not read your screen, and it does not put anything on your
+            clipboard until you have clicked a button that says it will.
+          </p>
+        </div>
+      </div>
+
+      <div class="rg rg--4">
+        <div class="cell">
+          <span class="cell__k">Step one</span>
+          <h3>Select, then right-click</h3>
+          <p>
+            Right-click is the single entry point. It shows the floating Xvoice button and does
+            nothing else &mdash; no copy, no read, no network call.
+          </p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Step two</span>
+          <h3>Click the button</h3>
+          <p>
+            Only now is your selection copied. A click means press <em>and</em> release on the button,
+            so a drag that happens to end there is not a click and will not fire.
+          </p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Step three</span>
+          <h3>Pick an action and a tone</h3>
+          <p>
+            Six actions in the menu, five tones underneath, and a Translate submenu for your saved
+            languages. Your defaults come pre-selected.
+          </p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Step four</span>
+          <h3>Preview, then accept</h3>
+          <p>
+            The rewrite appears in a floating panel beside the cursor with Accept and Dismiss, and
+            closes itself after 12 seconds if you ignore it. Or set it to replace immediately.
+          </p>
+        </div>
+      </div>
+
+      <div class="rg rg--3">
+        <div class="cell">
+          <span class="cell__k">Focus</span>
+          <h3>It puts the text back where you were</h3>
+          <p>
+            Accepting restores focus to the editor you were in <em>before</em> it pastes. Without that
+            step the rewrite lands in whatever window happened to be in front &mdash; which is the
+            classic way this kind of tool ruins a document.
+          </p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Terminals</span>
+          <h3>It knows not to send Ctrl+C to a console</h3>
+          <p>
+            In an editor Ctrl+C copies. In a terminal it is SIGINT, and with nothing selected it
+            kills whatever is running. Xvoice recognises Windows console windows and refuses to send
+            that keystroke there.
+          </p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Linux</span>
+          <h3>It tells you when the clipboard is missing</h3>
+          <p>
+            On Linux the clipboard needs <code class="inline">xclip</code> or
+            <code class="inline">xsel</code>. Xvoice checks once at startup and says so plainly,
+            rather than silently doing nothing forever.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── ACTIONS ───────────────────────────────────────── -->
+  <section class="band" id="actions">
+    <div class="wrap">
+      <div class="head">
+        <span class="head__label">Actions</span>
+        <div>
+          <h2>Ten things it will do to a paragraph.</h2>
+          <p class="lede">
+            Six are in the desktop menu because those are the six that get used. All ten are on the
+            API, so the dashboard and any future client can reach them. Whichever you pick, formatting
+            survives: line breaks, punctuation, emojis, numbering and bullet lists come back intact,
+            and you get the transformed text and nothing else &mdash; no preamble, no summary of what
+            changed.
+          </p>
+        </div>
+      </div>
+
+      <div class="actions">
+        <div class="actions__row">
+          <span class="actions__ico">&#10024;</span>
+          <span class="actions__n">Improve writing</span>
+          <span class="actions__d">Clarity, flow and word choice, with the original meaning kept. Fixes grammar and strips filler on the way through.</span>
+          <span class="actions__tag">In menu</span>
+        </div>
+        <div class="actions__row">
+          <span class="actions__ico">&#128188;</span>
+          <span class="actions__n">Professional tone</span>
+          <span class="actions__d">Formal business register. Clear, confident language fit for workplace communication.</span>
+          <span class="actions__tag">In menu</span>
+        </div>
+        <div class="actions__row">
+          <span class="actions__ico">&#128203;</span>
+          <span class="actions__n">Make it shorter</span>
+          <span class="actions__d">Cuts length hard while keeping every piece of information. Redundancy, passive voice and filler go first.</span>
+          <span class="actions__tag">In menu</span>
+        </div>
+        <div class="actions__row">
+          <span class="actions__ico">&#127760;</span>
+          <span class="actions__n">Translate</span>
+          <span class="actions__d">Into any of 60 languages. Six sit in the submenu by default; the rest you pin from settings.</span>
+          <span class="actions__tag">In menu</span>
+        </div>
+        <div class="actions__row">
+          <span class="actions__ico">&#128221;</span>
+          <span class="actions__n">Fix grammar</span>
+          <span class="actions__d">Grammar, spelling and punctuation only. Meaning, style and structure are left exactly as you wrote them.</span>
+          <span class="actions__tag">In menu</span>
+        </div>
+        <div class="actions__row">
+          <span class="actions__ico">&#128202;</span>
+          <span class="actions__n">Summarize</span>
+          <span class="actions__d">A short, clear paragraph carrying the essential points.</span>
+          <span class="actions__tag">In menu</span>
+        </div>
+        <div class="actions__row">
+          <span class="actions__ico">&#128200;</span>
+          <span class="actions__n">Expand</span>
+          <span class="actions__d">More detail, examples and context at the same tone and meaning.</span>
+          <span class="actions__tag">API</span>
+        </div>
+        <div class="actions__row">
+          <span class="actions__ico">&#128172;</span>
+          <span class="actions__n">Casual</span>
+          <span class="actions__d">Relaxed and conversational, as if you were telling a friend.</span>
+          <span class="actions__tag">API</span>
+        </div>
+        <div class="actions__row">
+          <span class="actions__ico">&#127919;</span>
+          <span class="actions__n">Persuasive</span>
+          <span class="actions__d">Compelling and motivating. Leads with benefits, adds a call to action, builds urgency where it fits.</span>
+          <span class="actions__tag">API</span>
+        </div>
+        <div class="actions__row">
+          <span class="actions__ico">&#128260;</span>
+          <span class="actions__n">Rephrase</span>
+          <span class="actions__d">Different words and sentence structures, identical meaning.</span>
+          <span class="actions__tag">API</span>
+        </div>
+      </div>
+
+      <h3 style="margin-top:54px;font-size:19px;">Five tones, layered on top</h3>
+      <p class="lede" style="margin-top:12px;">
+        A tone is not a separate action &mdash; it rides along with whichever one you pick, so
+        &ldquo;Make it shorter&rdquo; can come back confident or friendly. Translate ignores it.
+      </p>
+      <div class="tones">
+        <div class="tone">
+          <div class="tone__n">Neutral</div>
+          <div class="tone__d">No tonal instruction at all. The action does its job and nothing else. This is the default.</div>
+        </div>
+        <div class="tone">
+          <div class="tone__n">Professional</div>
+          <div class="tone__d">Formal, polished business language.</div>
+        </div>
+        <div class="tone">
+          <div class="tone__n">Friendly</div>
+          <div class="tone__d">Warm, approachable and conversational.</div>
+        </div>
+        <div class="tone">
+          <div class="tone__n">Confident</div>
+          <div class="tone__d">Assertive and direct. Hedging is removed.</div>
+        </div>
+        <div class="tone">
+          <div class="tone__n">Casual</div>
+          <div class="tone__d">Relaxed, informal, everyday language.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── LANGUAGES ─────────────────────────────────────── -->
+  <section class="band band--deep" id="languages">
+    <div class="wrap">
+      <div class="head">
+        <span class="head__label">Languages</span>
+        <div>
+          <h2>Sixty translation targets, twelve of them one click away.</h2>
+          <p class="lede">
+            Six languages are built into the Translate submenu with no configuration. The other 54 are
+            chosen on the settings page, and you can keep up to twelve pinned in the menu at once &mdash;
+            enough for the languages you actually work in, without a submenu you have to scroll.
+          </p>
+        </div>
+      </div>
+
+      <div class="langs">
+        <div class="langs__t">Built in &mdash; always in the menu</div>
+        <div class="langs__list">
+          <span class="built">English</span><span class="built">Spanish</span><span class="built">French</span>
+          <span class="built">German</span><span class="built">Japanese</span><span class="built">Hindi</span>
+        </div>
+      </div>
+
+      <div class="langs">
+        <div class="langs__t">Selectable from settings &mdash; 54 more, pin up to 12</div>
+        <div class="langs__list">
+          <span>Arabic</span><span>Assamese</span><span>Bengali</span><span>Bulgarian</span>
+          <span>Burmese</span><span>Catalan</span><span>Chinese (Simplified)</span>
+          <span>Chinese (Traditional)</span><span>Croatian</span><span>Czech</span><span>Danish</span>
+          <span>Dutch</span><span>Estonian</span><span>Filipino</span><span>Finnish</span>
+          <span>Greek</span><span>Gujarati</span><span>Hebrew</span><span>Hungarian</span>
+          <span>Icelandic</span><span>Indonesian</span><span>Italian</span><span>Kannada</span>
+          <span>Kazakh</span><span>Khmer</span><span>Korean</span><span>Latvian</span>
+          <span>Lithuanian</span><span>Malay</span><span>Malayalam</span><span>Marathi</span>
+          <span>Nepali</span><span>Norwegian</span><span>Odia</span><span>Persian</span>
+          <span>Polish</span><span>Portuguese</span><span>Punjabi</span><span>Romanian</span>
+          <span>Russian</span><span>Serbian</span><span>Sinhala</span><span>Slovak</span>
+          <span>Slovenian</span><span>Swahili</span><span>Swedish</span><span>Tamil</span>
+          <span>Telugu</span><span>Thai</span><span>Turkish</span><span>Ukrainian</span>
+          <span>Urdu</span><span>Vietnamese</span><span>Welsh</span>
+        </div>
+      </div>
+
+      <p class="lede" style="margin-top:22px;">
+        Names are stored, not ISO codes &mdash; the value is what the menu displays and what the model
+        is told to translate into, so a readable name is the honest storage form. Spelling is
+        normalised on save, which means &ldquo;kannada&rdquo; and &ldquo;KANNADA&rdquo; both land as
+        Kannada, and one unrecognised entry is dropped rather than losing the rest of your list.
+      </p>
+    </div>
+  </section>
+
+  <!-- ── SETTINGS ──────────────────────────────────────── -->
+  <section class="band" id="settings">
+    <div class="wrap">
+      <div class="head">
+        <span class="head__label">Your defaults</span>
+        <div>
+          <h2>Set it once. It follows you to every machine.</h2>
+          <p class="lede">
+            Preferences live on your account, not in a config file on one computer. Change them on the
+            dashboard and the desktop app picks them up &mdash; no restart, no re-login.
+          </p>
+        </div>
+      </div>
+
+      <div class="rg rg--3">
+        <div class="cell">
+          <span class="cell__k">Default action</span>
+          <h3>The one you reach for</h3>
+          <p>Pre-selected in the menu. Ships as Improve writing.</p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Default tone</span>
+          <h3>Applied unless you change it</h3>
+          <p>One of the five. Ships as Neutral, meaning no tonal instruction is added at all.</p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Default language</span>
+          <h3>Where Translate goes</h3>
+          <p>Used when you pick Translate without choosing a target. Ships as English.</p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Preview or replace</span>
+          <h3>How the result arrives</h3>
+          <p>
+            Preview with Accept/Dismiss is the default. Turn on auto-replace and the selection is
+            swapped the moment the rewrite comes back.
+          </p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Writing hotkey</span>
+          <h3>Separate from dictation</h3>
+          <p>
+            Right-click by default. Or bind F2&ndash;F12, Ctrl, Alt, Shift, Space, Tab, Caps&nbsp;Lock,
+            Esc, Enter, the arrows, Insert, Delete, Home, End or Page&nbsp;Up/Down &mdash; validated
+            server-side so the desktop app can never be handed a key that breaks it.
+          </p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Usage</span>
+          <h3>What you actually use it for</h3>
+          <p>
+            The dashboard breaks your actions down by type over 7 or 30 days, alongside the month's
+            total and today's count against your limit.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── PLANS ─────────────────────────────────────────── -->
+  <section class="band band--deep" id="plans">
+    <div class="wrap">
+      <div class="head">
+        <span class="head__label">Plans</span>
+        <div>
+          <h2>Writing is sold on its own. You do not need Dictation.</h2>
+          <p class="lede">
+            There is deliberately no account-wide &ldquo;premium&rdquo; at Xvoice. Writing and
+            Dictation are resolved independently, so you can buy this one alone, and a lapsed
+            Dictation plan can never switch it off.
+          </p>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><div class="stat__v">14 days</div><div class="stat__l">free trial, its own clock</div></div>
+        <div class="stat"><div class="stat__v">50</div><div class="stat__l">rewrites a day during trial</div></div>
+        <div class="stat"><div class="stat__v">30</div><div class="stat__l">actions a month once free</div></div>
+        <div class="stat"><div class="stat__v">100</div><div class="stat__l">a month for Dictation Pro</div></div>
+        <div class="stat"><div class="stat__v">Unlimited</div><div class="stat__l">on Writing Pro or Platform</div></div>
+      </div>
+
+      <div class="plans">
+        <div class="plan">
+          <div>
+            <div class="plan__name">Free</div>
+            <div class="plan__for">After the trial ends, this is what stays.</div>
+          </div>
+          <ul>
+            <li>30 writing actions a month</li>
+            <li>All 10 actions and all 5 tones</li>
+            <li>All 60 translation languages</li>
+            <li>Preview and auto-replace</li>
+            <li>8,000 characters per action</li>
+          </ul>
+          <a class="btn btn--ghost" href="https://xvoicekeyboard.com/download">Download</a>
+        </div>
+
+        <div class="plan plan--mid">
+          <div>
+            <div class="plan__name">Writing Pro</div>
+            <div class="plan__for">For people who edit more than they dictate.</div>
+          </div>
+          <ul>
+            <li>Unlimited rewrites, no monthly cap</li>
+            <li>No daily limit</li>
+            <li>Custom writing hotkey</li>
+            <li>Full per-action usage history</li>
+            <li>Independent of any Dictation plan</li>
+          </ul>
+          <a class="btn" href="https://xvoicekeyboard.com/writing">See pricing</a>
+        </div>
+
+        <div class="plan">
+          <div>
+            <div class="plan__name">Platform</div>
+            <div class="plan__for">Writing and Dictation, one subscription.</div>
+          </div>
+          <ul>
+            <li>Everything in Writing Pro</li>
+            <li>Everything in Dictation Pro</li>
+            <li>One renewal date instead of two</li>
+            <li>A real bundle &mdash; never inferred from owning both separately</li>
+          </ul>
+          <a class="btn btn--ghost" href="https://xvoicekeyboard.com">See pricing</a>
+        </div>
+      </div>
+
+      <div class="tablewrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Writing</th>
+              <th>Trial</th>
+              <th>Free</th>
+              <th>Dictation Pro</th>
+              <th>Writing Pro / Platform</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Actions per month</td>
+              <td class="n">Uncapped</td>
+              <td>30</td>
+              <td>100</td>
+              <td class="y">Unlimited</td>
+            </tr>
+            <tr>
+              <td>Actions per day</td>
+              <td>50</td>
+              <td class="n">&mdash;</td>
+              <td class="n">&mdash;</td>
+              <td class="y">Unlimited</td>
+            </tr>
+            <tr>
+              <td>All 10 actions<small>6 in menu, 10 on the API</small></td>
+              <td class="y">Yes</td>
+              <td class="y">Yes</td>
+              <td class="y">Yes</td>
+              <td class="y">Yes</td>
+            </tr>
+            <tr>
+              <td>All 60 languages</td>
+              <td class="y">Yes</td>
+              <td class="y">Yes</td>
+              <td class="y">Yes</td>
+              <td class="y">Yes</td>
+            </tr>
+            <tr>
+              <td>Custom writing hotkey</td>
+              <td class="y">Yes</td>
+              <td class="n">Right-click</td>
+              <td class="n">Right-click</td>
+              <td class="y">Yes</td>
+            </tr>
+            <tr>
+              <td>Per-action usage history</td>
+              <td class="y">Yes</td>
+              <td>Limited</td>
+              <td>Limited</td>
+              <td class="y">Full</td>
+            </tr>
+            <tr>
+              <td>Characters per action</td>
+              <td>8,000</td>
+              <td>8,000</td>
+              <td>8,000</td>
+              <td>8,000</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="rg rg--3">
+        <div class="cell">
+          <span class="cell__k">Independent</span>
+          <h3>Your Dictation plan cannot switch this off</h3>
+          <p>
+            Each product carries its own status, renewal date and subscription id. One expiring leaves
+            the other exactly where it was.
+          </p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Separate trials</span>
+          <h3>Starting one never burns the other</h3>
+          <p>
+            Writing gets its own full 14 days, on its own clock. Trying or buying Dictation does not
+            consume, shorten or start it.
+          </p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Cancelling</span>
+          <h3>You keep what you paid for</h3>
+          <p>
+            Access continues to the end of the period you already paid for, then drops to the free
+            allowance. Billing runs through the Stripe customer portal.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── PRIVACY ───────────────────────────────────────── -->
+  <section class="band" id="privacy">
+    <div class="wrap">
+      <div class="head">
+        <span class="head__label">Privacy &amp; safety</span>
+        <div>
+          <h2>It reads what you highlight, and nothing else.</h2>
+        </div>
+      </div>
+
+      <div class="rg rg--3">
+        <div class="cell">
+          <span class="cell__k">Consent</span>
+          <h3>Nothing is copied until you click</h3>
+          <p>
+            Selecting text does not trigger anything. Right-clicking only offers the button. Your
+            clipboard is read at the moment you click it, and not before.
+          </p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Retention</span>
+          <h3>Only a 200-character excerpt is stored</h3>
+          <p>
+            The history view renders a 120-character snippet, so that is all that needs keeping.
+            Everything you highlight is not archived in full, forever.
+          </p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Logs</span>
+          <h3>Your text is never written to the log file</h3>
+          <p>
+            Logs record lengths, action names and status codes. Not the text you rewrote, and not what
+            came back.
+          </p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Prompt injection</span>
+          <h3>Your text is data, never instructions</h3>
+          <p>
+            Every action tells the model to treat the input strictly as text to transform, and never
+            to execute, answer, obey or act on anything inside it. A pasted email full of
+            &ldquo;ignore your instructions&rdquo; gets rewritten, not obeyed &mdash; which matters,
+            because the text you highlight usually came from somebody else.
+          </p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">No API keys</span>
+          <h3>The model key is never on your machine</h3>
+          <p>
+            Rewrites run on the Xvoice backend, which holds the OpenAI key server-side. You sign in
+            through your browser once and the desktop app never sees it.
+          </p>
+        </div>
+        <div class="cell">
+          <span class="cell__k">Sessions</span>
+          <h3>Log out everywhere, instantly</h3>
+          <p>
+            One click invalidates every token on every device at once, desktop and browser, by bumping
+            a version the server checks on each request.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── WHERE IT RUNS ─────────────────────────────────── -->
+  <section class="band band--deep">
+    <div class="wrap">
+      <div class="head">
+        <span class="head__label">Where it runs</span>
+        <div>
+          <h2>One download. Writing and Dictation are in the same app.</h2>
+          <p class="lede">
+            There is no separate Writing installer. The app you download carries both tools and enables
+            whichever your account is entitled to &mdash; so trying Writing is a setting, not another
+            install.
+          </p>
+        </div>
+      </div>
+
+      <div class="rg rg--4">
+        <div class="cell">
+          <h3>Windows</h3>
+          <p class="m" style="color:var(--sand);font-size:12.5px;margin:8px 0 9px;">XVoiceSetup.exe</p>
+          <p>Double-click to run. If SmartScreen warns, choose More info &rarr; Run anyway.</p>
+        </div>
+        <div class="cell">
+          <h3>macOS &middot; Apple Silicon</h3>
+          <p class="m" style="color:var(--sand);font-size:12.5px;margin:8px 0 9px;">Xvoice-arm64.pkg</p>
+          <p>Recommended for M1&ndash;M4. Needs Accessibility and Input Monitoring to read a selection and type the result back.</p>
+        </div>
+        <div class="cell">
+          <h3>macOS &middot; Intel</h3>
+          <p class="m" style="color:var(--sand);font-size:12.5px;margin:8px 0 9px;">Xvoice-x86_64.pkg</p>
+          <p>Builds are frozen per-architecture and are not interchangeable. Check with &#63743; &rarr; About This Mac.</p>
+        </div>
+        <div class="cell">
+          <h3>Linux</h3>
+          <p class="m" style="color:var(--sand);font-size:12.5px;margin:8px 0 9px;">Xvoice-x86_64.AppImage</p>
+          <p><code class="inline">chmod +x</code> then run. Install <code class="inline">xclip</code> or <code class="inline">xsel</code> first &mdash; the clipboard needs one.</p>
+        </div>
+      </div>
+
+      <h3 style="margin-top:52px;font-size:19px;">Specifications</h3>
+      <div class="spec">
+        <div class="spec__row"><span class="spec__k">Rewrite model</span><span class="spec__v">gpt-4o</span></div>
+        <div class="spec__row"><span class="spec__k">Actions</span><span class="spec__v">10 (6 in the desktop menu)</span></div>
+        <div class="spec__row"><span class="spec__k">Tones</span><span class="spec__v">5</span></div>
+        <div class="spec__row"><span class="spec__k">Translation languages</span><span class="spec__v">60 (6 built in, 12 pinnable)</span></div>
+        <div class="spec__row"><span class="spec__k">Input limit</span><span class="spec__v">8,000 characters</span></div>
+        <div class="spec__row"><span class="spec__k">Over the limit</span><span class="spec__v">413, before any model call</span></div>
+        <div class="spec__row"><span class="spec__k">Rate limit</span><span class="spec__v">20 actions / 60 seconds</span></div>
+        <div class="spec__row"><span class="spec__k">Transient error retries</span><span class="spec__v">3</span></div>
+        <div class="spec__row"><span class="spec__k">Preview timeout</span><span class="spec__v">12 seconds</span></div>
+        <div class="spec__row"><span class="spec__k">Preview panel width</span><span class="spec__v">430 px</span></div>
+        <div class="spec__row"><span class="spec__k">Stored excerpt</span><span class="spec__v">200 characters</span></div>
+        <div class="spec__row"><span class="spec__k">Trigger</span><span class="spec__v">right-click, or a bound key</span></div>
+        <div class="spec__row"><span class="spec__k">Overlay</span><span class="spec__v">PySide6 / Qt, frameless</span></div>
+        <div class="spec__row"><span class="spec__k">Clipboard</span><span class="spec__v">pyperclip</span></div>
+        <div class="spec__row"><span class="spec__k">Backend</span><span class="spec__v">FastAPI, PostgreSQL, Redis</span></div>
+        <div class="spec__row"><span class="spec__k">Client licence</span><span class="spec__v">MIT</span></div>
+        <div class="spec__row"><span class="spec__k">Publisher</span><span class="spec__v">Shreesha M Rao</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── FAQ ───────────────────────────────────────────── -->
+  <section class="band" id="faq">
+    <div class="wrap">
+      <div class="head">
+        <span class="head__label">Questions</span>
+        <div><h2>Before you download</h2></div>
+      </div>
+
+      <div class="faq">
+        <details>
+          <summary>Do I have to buy Dictation to use Writing?</summary>
+          <p>No. Writing is sold on its own and resolved independently. If you already have Dictation
+            Pro you get 100 writing actions a month included, but that is a taste of the product, not
+            a substitute for it.</p>
+        </details>
+        <details>
+          <summary>Which applications does it work in?</summary>
+          <p>Any application where you can select text and copy it &mdash; browsers, Word, Slack, email
+            clients, code editors, note apps, PDF readers with selectable text. The rewrite is pasted
+            back the same way, so anywhere you can paste, it can write.</p>
+        </details>
+        <details>
+          <summary>Does it watch everything I select?</summary>
+          <p>No, and this is deliberate. Selecting text does nothing at all. Right-clicking only makes
+            the button appear. Your selection is copied at the moment you click that button, and never
+            before it.</p>
+        </details>
+        <details>
+          <summary>What if I do not like the rewrite?</summary>
+          <p>Dismiss it and nothing changes &mdash; the preview panel closes on its own after 12
+            seconds if you ignore it. Your original text is untouched until you press Accept. If you
+            would rather skip the step entirely, auto-replace is a setting.</p>
+        </details>
+        <details>
+          <summary>How long can the selection be?</summary>
+          <p>8,000 characters, roughly 1,200 words. Anything longer is rejected before a model call is
+            made, so it does not silently eat one of your monthly actions.</p>
+        </details>
+        <details>
+          <summary>Does it keep my text?</summary>
+          <p>Only a 200-character excerpt of the input and output, because the history view renders a
+            120-character snippet. Nothing you rewrite is written to the log file &mdash; logs record
+            lengths, action names and status codes.</p>
+        </details>
+        <details>
+          <summary>Can I add a language that is not in the menu?</summary>
+          <p>Yes. Six are built in; 54 more are on the settings page and you can pin up to twelve into
+            the Translate submenu at a time.</p>
+        </details>
+        <details>
+          <summary>Can I trigger it with a key instead of right-clicking?</summary>
+          <p>Yes, and it is a separate hotkey from dictation, so the two never collide. Pick a function
+            key or a standard modifier; the allowed set is validated server-side so the desktop app can
+            never be handed a binding that breaks it.</p>
+        </details>
+        <details>
+          <summary>It does nothing on my Linux machine.</summary>
+          <p>The clipboard needs <code class="inline">xclip</code> or <code class="inline">xsel</code>
+            installed. Xvoice checks at startup and logs the exact fix &mdash;
+            <code class="inline">sudo apt install xclip</code>.</p>
+        </details>
+        <details>
+          <summary>What happens when my trial ends?</summary>
+          <p>Writing drops to the free allowance of 30 actions a month. Nothing is deleted, your
+            preferences and pinned languages stay, and your Dictation trial is unaffected because it
+            runs on its own clock.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── CLOSER ────────────────────────────────────────── -->
+  <section class="closer">
+    <div>
+      <h2>Your next email is already half-written.</h2>
+      <p>
+        Fourteen days free, on its own clock. No API key, no configuration, and no second app to
+        install &mdash; it is in the one you already downloaded.
+      </p>
+    </div>
+    <div class="cta-row">
+      <a class="btn" href="https://xvoicekeyboard.com/download">Download Xvoice</a>
+      <a class="btn btn--ghost" href="https://xvoicekeyboard.com/writing">Open dashboard</a>
+    </div>
+  </section>
+
+  <!-- ── FOOTER ────────────────────────────────────────── -->
+  <footer class="foot">
+    <div class="wrap">
+      <div class="foot__grid">
+        <div>
+          <a class="brand" href="#top" style="margin-bottom:14px;">
+            <svg class="brand__mark" viewBox="0 0 64 64" aria-hidden="true">
+              <rect x="22" y="6" width="20" height="30" rx="10" fill="currentColor"></rect>
+              <path d="M14 30 a18 16 0 0 0 36 0" fill="none" stroke="currentColor" stroke-width="5"></path>
+              <path d="M32 50 v9 M22 59 h20" stroke="currentColor" stroke-width="5" stroke-linecap="square"></path>
+            </svg>
+            Xvoice
+            <span class="brand__sub">Writing</span>
+          </a>
+          <p style="max-width:34ch;">
+            In-place AI writing for Windows, macOS and Linux. Built by Shreesha M Rao.
+          </p>
+          <p class="m" style="margin-top:16px;font-size:12px;color:var(--text-2);">
+            Design something that&rsquo;s perfect.
+          </p>
+        </div>
+        <div>
+          <h4>Writing</h4>
+          <ul>
+            <li><a href="#how">How it works</a></li>
+            <li><a href="#actions">Actions &amp; tones</a></li>
+            <li><a href="#languages">Languages</a></li>
+            <li><a href="#plans">Plans</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Xvoice</h4>
+          <ul>
+            <li><a href="https://xvoicekeyboard.com">Dictation</a></li>
+            <li><a href="https://xvoicekeyboard.com/download">Download</a></li>
+            <li><a href="https://xvoicekeyboard.com">Dashboard</a></li>
+            <li><a href="https://xvoicekeyboard.com">Billing</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Developers</h4>
+          <ul>
+            <li><a href="https://github.com/Shreesha1207/Voice-text-keyboard">Source on GitHub</a></li>
+            <li><a href="https://github.com/Shreesha1207/Voice-text-keyboard/releases">Releases</a></li>
+            <li><a href="https://github.com/Shreesha1207/Voice-text-keyboard/issues">Report an issue</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="foot__legal">
+        <span>&copy; 2026 Xvoice &middot; Shreesha M Rao</span>
+        <span>Desktop client MIT-licensed &middot; v1.2.1</span>
+      </div>
+    </div>
+  </footer>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  var docText    = document.getElementById("docText");
+  var floatBtn   = document.getElementById("floatBtn");
+  var actionMenu = document.getElementById("actionMenu");
+  var toneRow    = document.getElementById("toneRow");
+  var preview    = document.getElementById("preview");
+  var pvAction   = document.getElementById("previewAction");
+  var pvBody     = document.getElementById("previewBody");
+  var pvTimer    = document.getElementById("previewTimer");
+  var acceptBtn  = document.getElementById("acceptBtn");
+  var dismissBtn = document.getElementById("dismissBtn");
+  var selectBtn  = document.getElementById("selectBtn");
+  var resetBtn   = document.getElementById("resetBtn");
+
+  var ORIGINAL = docText ? docText.textContent.replace(/\s+/g, " ").trim() : "";
+  var workTimer = null, countdown = null, pending = null, tone = "neutral";
+
+  var LABELS = {
+    improve:      "Improve writing",
+    professional: "Professional tone",
+    shorten:      "Make it shorter",
+    translate:    "Translate → Spanish",
+    fix_grammar:  "Fix grammar",
+    summarise:    "Summarize"
+  };
+
+  /* Results are written per action AND per tone, so switching the tone chip
+     actually changes what comes back — the way it does in the real app. */
+  var RESULTS = {
+    improve: {
+      neutral:      "Hi — unfortunately we won't be able to deliver by Friday: the API work is taking considerably longer than we anticipated. Apologies for that. We should be able to have it with you by next Wednesday, if that works for you?",
+      professional: "Hello — we are unable to meet the Friday deadline, as the API work has proven more involved than estimated. We apologise for the delay. We expect to deliver by next Wednesday, subject to your confirmation.",
+      friendly:     "Hi! Small bit of bad news — Friday isn't going to happen, I'm afraid. The API work turned out to be a much bigger job than we expected, and I'm sorry about that. Would next Wednesday work for you instead?",
+      confident:    "Friday is not achievable — the API work is significantly larger than scoped. We will deliver next Wednesday. Let me know if that date presents a problem.",
+      casual:       "Hey — so Friday's not going to happen, sorry. The API side turned into way more work than we thought. Next Wednesday should be doable though, does that work?"
+    },
+    professional: {
+      neutral:      "Hello, I am writing to let you know that we will not be able to complete the work by Friday. The API integration has required more time than originally estimated, and I apologise for the delay. We anticipate delivery by next Wednesday, and would be grateful if you could confirm whether that timeline is acceptable.",
+      professional: "Dear colleague, I regret to inform you that the Friday deadline will not be met. The API integration has required substantially more development time than originally scoped. We now anticipate delivery by Wednesday of next week and would welcome your confirmation that this revised timeline is acceptable.",
+      friendly:     "Hello, I wanted to give you a heads-up that we won't make Friday. The API integration has taken more time than we estimated, and I'm sorry for the disruption. We're now looking at next Wednesday — please do let me know if that causes you any difficulty.",
+      confident:    "Hello. The Friday deadline will not be met: the API integration required more development time than scoped. Delivery is now set for next Wednesday. Please confirm this works on your side.",
+      casual:       "Hi there — quick update: Friday isn't going to work out. The API integration ran well over what we estimated. We're aiming for next Wednesday now. Let me know if that's a problem."
+    },
+    shorten: {
+      neutral:      "We can't hit Friday — the API work is running long. Sorry about that. Next Wednesday instead, if that works?",
+      professional: "We will not meet Friday; the API work has overrun. We apologise. Revised delivery: next Wednesday, subject to your approval.",
+      friendly:     "Bad news — Friday's off, the API work ran long. Sorry! Next Wednesday instead?",
+      confident:    "Friday is not achievable — the API work overran. We deliver next Wednesday.",
+      casual:       "Friday's not happening, API stuff ran long. Sorry! Next Wednesday OK?"
+    },
+    translate: {
+      neutral:      "Hola: lamentablemente no podremos terminar antes del viernes, ya que el trabajo con la API está llevando mucho más tiempo del previsto. Disculpa las molestias. Creemos que podremos entregarlo el próximo miércoles, ¿te parece bien?"
+    },
+    fix_grammar: {
+      neutral:      "Hi, so basically we can't get the thing done by Friday because the API stuff is taking way longer than we thought. Sorry about that. We can probably do it by next Wednesday, if that's OK with you?",
+      professional: "Hi, so basically we can't get the thing done by Friday because the API stuff is taking way longer than we thought. Sorry about that. We can probably do it by next Wednesday, if that's OK with you?",
+      friendly:     "Hi, so basically we can't get the thing done by Friday because the API stuff is taking way longer than we thought. Sorry about that! We can probably do it by next Wednesday, if that's OK with you?",
+      confident:    "Hi. We can't get this done by Friday because the API work is taking far longer than we thought. Sorry about that. We can do it by next Wednesday, if that's OK with you.",
+      casual:       "Hi, so basically we can't get the thing done by Friday 'cause the API stuff is taking way longer than we thought. Sorry about that. We can probably do it by next Wednesday, if that's cool with you?"
+    },
+    summarise: {
+      neutral:      "Friday deadline missed due to unexpected API delays; revised delivery proposed for next Wednesday, pending the client's confirmation.",
+      professional: "The Friday deadline will not be met owing to unforeseen API delays. Revised delivery is proposed for the following Wednesday, subject to client confirmation.",
+      friendly:     "Friday's slipping because the API work ran long — next Wednesday is the new suggestion, waiting on the client to confirm.",
+      confident:    "Friday will be missed: API delays. New delivery date is next Wednesday. Awaiting client confirmation.",
+      casual:       "Friday's off — API stuff ran long. Suggesting next Wednesday, waiting to hear back."
+    }
+  };
+
+  function resultFor(action) {
+    var byTone = RESULTS[action] || RESULTS.improve;
+    return byTone[tone] || byTone.neutral;
+  }
+
+  function place(el) {
+    if (!docText || !el) return;
+    el.style.left = docText.offsetLeft + "px";
+    el.style.top  = (docText.offsetTop + docText.offsetHeight + 8) + "px";
+  }
+
+  function showButton() {
+    if (!docText) return;
+    docText.classList.add("is-selected");
+    if (actionMenu) actionMenu.hidden = true;
+    place(floatBtn);
+    if (floatBtn) floatBtn.hidden = false;
+  }
+
+  function showMenu() {
+    if (floatBtn) floatBtn.hidden = true;
+    place(actionMenu);
+    if (actionMenu) {
+      actionMenu.hidden = false;
+      var first = actionMenu.querySelector("button[data-action]");
+      if (first) first.focus();
+    }
+  }
+
+  function stopTimers() {
+    clearTimeout(workTimer);
+    clearInterval(countdown);
+    workTimer = countdown = null;
+  }
+
+  function runAction(action) {
+    stopTimers();
+    if (actionMenu) actionMenu.hidden = true;
+    if (docText) docText.classList.add("is-working");
+
+    var result = resultFor(action);
+    pending = result;
+
+    if (pvAction) pvAction.textContent = LABELS[action] || action;
+    if (pvBody) pvBody.textContent = "working…";
+    if (pvTimer) pvTimer.textContent = "";
+    if (preview) preview.hidden = false;
+
+    workTimer = setTimeout(function () {
+      if (pvBody) pvBody.textContent = result;
+      startCountdown();
+    }, reduced ? 0 : 700);
+  }
+
+  function startCountdown() {
+    var left = 12;
+    if (pvTimer) pvTimer.textContent = "closes in " + left + "s";
+    if (reduced) return;
+    countdown = setInterval(function () {
+      left -= 1;
+      if (pvTimer) pvTimer.textContent = "closes in " + left + "s";
+      if (left <= 0) { dismiss(); }
+    }, 1000);
+  }
+
+  function accept() {
+    stopTimers();
+    if (docText && pending) {
+      docText.textContent = pending;
+      docText.classList.remove("is-working", "is-selected");
+    }
+    if (preview) preview.hidden = true;
+    pending = null;
+  }
+
+  function dismiss() {
+    stopTimers();
+    if (docText) docText.classList.remove("is-working");
+    if (preview) preview.hidden = true;
+    pending = null;
+  }
+
+  function reset() {
+    stopTimers();
+    pending = null;
+    if (docText) {
+      docText.textContent = ORIGINAL;
+      docText.classList.remove("is-selected", "is-working");
+    }
+    if (floatBtn) floatBtn.hidden = true;
+    if (actionMenu) actionMenu.hidden = true;
+    if (preview) preview.hidden = true;
+  }
+
+  if (selectBtn) selectBtn.addEventListener("click", showButton);
+  if (floatBtn)  floatBtn.addEventListener("click", showMenu);
+  if (docText) {
+    docText.addEventListener("contextmenu", function (e) { e.preventDefault(); showButton(); });
+  }
+  if (actionMenu) {
+    actionMenu.addEventListener("click", function (e) {
+      var btn = e.target.closest("button[data-action]");
+      if (!btn) return;
+      runAction(btn.getAttribute("data-action"));
+    });
+  }
+  if (toneRow) {
+    toneRow.addEventListener("click", function (e) {
+      var btn = e.target.closest("button[data-tone]");
+      if (!btn) return;
+      tone = btn.getAttribute("data-tone");
+      var all = toneRow.querySelectorAll("button[data-tone]");
+      for (var i = 0; i < all.length; i++) {
+        all[i].setAttribute("aria-pressed", all[i] === btn ? "true" : "false");
+      }
+    });
+  }
+  if (acceptBtn)  acceptBtn.addEventListener("click", accept);
+  if (dismissBtn) dismissBtn.addEventListener("click", dismiss);
+  if (resetBtn)   resetBtn.addEventListener("click", reset);
+})();
+</script>
