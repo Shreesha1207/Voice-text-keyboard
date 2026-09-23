@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, update
+from sqlalchemy import case, or_, select, func, update
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from dependencies import get_current_user
 from database import get_db
@@ -146,14 +146,66 @@ def _writing_quota_for(user: User) -> int:
         return 100
     return FREE_WRITING_QUOTA
 
-def _maybe_reset_quota(user: User) -> None:
-    """Reset the monthly counter if we've entered a new calendar month."""
-    now = datetime.now(timezone.utc)
+def _current_month() -> tuple[datetime, datetime]:
+    """Start of this calendar month and of the next, UTC and naive as stored."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return start, (start + timedelta(days=32)).replace(day=1)
+
+def _quota_is_current(user: User) -> bool:
+    """Does the stored monthly counter belong to the current calendar month?"""
+    start, next_start = _current_month()
     last_reset = user.writing_quota_reset_at
-    if last_reset is None or last_reset.replace(tzinfo=timezone.utc).month != now.month \
-            or last_reset.replace(tzinfo=timezone.utc).year != now.year:
-        user.writing_actions_this_month = 0
-        user.writing_quota_reset_at = now.replace(tzinfo=None)
+    return last_reset is not None and start <= last_reset < next_start
+
+def _actions_used_this_month(user: User) -> int:
+    """This month's count, without writing anything.
+
+    A counter from an earlier month counts as 0. It is only reset when the next
+    action is claimed, and reads must never reset it: a read that did (validate
+    and stats used to) could land just after a claim and wipe that action out.
+    """
+    return user.writing_actions_this_month if _quota_is_current(user) else 0
+
+async def _claim_writing_action(db: AsyncSession, user: User) -> None:
+    """Count one writing action against this month's allowance, or raise 429.
+
+    Every endpoint that performs a writing action goes through here, so the
+    allowance (30 a month on the trial) is the same whether the action comes
+    from the desktop app's /text/transform or from /writing/rewrite and
+    /writing/record. Those two used to enforce a separate 50-a-day cap instead.
+    """
+    quota = _writing_quota_for(user)
+    if quota == UNLIMITED_QUOTA:
+        return
+    # Check, start a new month and count in ONE statement, so concurrent
+    # requests cannot see the same value and all pass — the cap could once be
+    # overrun by firing requests in parallel. The new-month reset used to happen
+    # in Python first; simultaneous actions on the 1st then each reset the
+    # counter to 0, overwrote each other and were under-counted.
+    start, next_start = _current_month()
+    stale = or_(User.writing_quota_reset_at.is_(None),
+                User.writing_quota_reset_at < start,
+                User.writing_quota_reset_at >= next_start)
+    claim = await db.execute(
+        update(User)
+        .where(User.id == user.id, or_(stale, User.writing_actions_this_month < quota))
+        .values(
+            writing_actions_this_month=case((stale, 1), else_=User.writing_actions_this_month + 1),
+            writing_quota_reset_at=case((stale, datetime.now(timezone.utc).replace(tzinfo=None)),
+                                        else_=User.writing_quota_reset_at),
+        )
+        # The row is re-read below, so the in-memory copy need not be synced.
+        .execution_options(synchronize_session=False)
+    )
+    if claim.rowcount == 0:
+        await db.rollback()
+        raise HTTPException(
+            status_code=429,
+            detail=f"Monthly writing quota ({quota} actions) reached. "
+                   "Upgrade to Writing Pro for unlimited actions."
+        )
+    await db.refresh(user)
 
 # ─────────────────────────────────────────────────────────────────────────────
 #   Request / Response models
@@ -203,40 +255,14 @@ async def transform_text(
             detail=f"Text exceeds the {MAX_TEXT_CHARS} character limit.",
         )
 
-    # 2. Writing entitlement gate.
-    #    Writing has its OWN trial (writing_trial_started_at), independent of the
-    #    dictation/keyboard trial. Block when that writing trial has expired or was
-    #    never started — unless the user is on a writing/platform plan.
-    from routers.writing_prefs import _writing_status
-    wstatus = _writing_status(current_user)
-    if wstatus["status"] in ("inactive", "expired"):
-        raise HTTPException(
-            status_code=403,
-            detail="Your Xvoice Writing trial has ended. Upgrade to keep using Writing.",
-        )
+    # 2. Writing entitlement gate: a Writing or Platform subscription, or Writing's
+    #    OWN trial (independent of the Dictation trial). The same check
+    #    /writing/rewrite and /writing/record use, so all three answer 403 alike.
+    from routers.writing_prefs import _require_writing_access
+    _require_writing_access(current_user)
 
-    # 3. Quota check + possible monthly reset
-    _maybe_reset_quota(current_user)
-    quota = _writing_quota_for(current_user)
-    if quota != UNLIMITED_QUOTA:
-        # Claim the slot atomically. Reading the counter, checking it, then
-        # incrementing later left a window in which concurrent requests all saw the
-        # same value and every one of them passed — so the cap could be overrun by
-        # simply firing requests in parallel. The UPDATE ... WHERE does the check
-        # and the increment in a single statement; rowcount tells us if we won.
-        claim = await db.execute(
-            update(User)
-            .where(User.id == current_user.id, User.writing_actions_this_month < quota)
-            .values(writing_actions_this_month=User.writing_actions_this_month + 1)
-        )
-        if claim.rowcount == 0:
-            await db.rollback()
-            raise HTTPException(
-                status_code=429,
-                detail=f"Monthly writing quota ({quota} actions) reached. "
-                       "Upgrade to Writing Pro for unlimited actions."
-            )
-        await db.refresh(current_user)
+    # 3. Count it against this month's allowance (429 once it is used up)
+    await _claim_writing_action(db, current_user)
 
     # 4. Call OpenAI
     system_prompt = _build_system_prompt(request.action, request.target_language)
@@ -307,12 +333,14 @@ async def _log_action(
 @router.get("/writing/validate", response_model=WritingValidateResponse)
 async def writing_validate(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    """Check if the user can use Xvoice Writing and return their quota state."""
+    """Check if the user can use Xvoice Writing and return their quota state.
 
-    _maybe_reset_quota(current_user)
+    Read-only. It used to reset the monthly counter at the turn of the month
+    and commit, which could land just after an action was counted and wipe it.
+    """
     quota = _writing_quota_for(current_user)
+    used = _actions_used_this_month(current_user)
 
     # Determine access from the WRITING trial (writing_trial_started_at), not the
     # dictation trial — the two are independent.
@@ -328,18 +356,16 @@ async def writing_validate(
         allowed, reason = False, "inactive"
 
     # Quota override: even if trial is active, block if quota exhausted
-    if allowed and quota != UNLIMITED_QUOTA and current_user.writing_actions_this_month >= quota:
+    if allowed and quota != UNLIMITED_QUOTA and used >= quota:
         allowed = False
         reason = "quota_exceeded"
-
-    await db.commit()  # persist any quota reset
 
     return WritingValidateResponse(
         allowed=allowed,
         reason=reason,
         plan_product=current_user.plan_product,
         writing_quota=quota,
-        writing_used=current_user.writing_actions_this_month,
+        writing_used=used,
         user_id=str(current_user.id),
     )
 
@@ -352,7 +378,8 @@ async def writing_stats(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    _maybe_reset_quota(current_user)
+    # Read-only, like /writing/validate: resetting the counter here could wipe
+    # an action counted a moment earlier.
     quota = _writing_quota_for(current_user)
 
     # Total all-time
@@ -379,12 +406,11 @@ async def writing_stats(
     )
     chars = chars_q.scalar_one() or 0
 
-    await db.commit()
-
     return WritingStatsResponse(
-        actions_this_month=current_user.writing_actions_this_month,
+        actions_this_month=_actions_used_this_month(current_user),
         quota=quota,
-        quota_resets_at=current_user.writing_quota_reset_at,
+        # When this month's count started; none yet if no action this month.
+        quota_resets_at=current_user.writing_quota_reset_at if _quota_is_current(current_user) else None,
         total_actions_all_time=total,
         most_used_action=most_used,
         chars_processed_all_time=chars,

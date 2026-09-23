@@ -23,6 +23,15 @@ def _user_agent() -> str:
 USER_AGENT = _user_agent()
 
 
+def _server_detail(response) -> Optional[str]:
+    """The server's own error message, when the body carries one."""
+    try:
+        detail = response.json().get("detail")
+    except (ValueError, AttributeError):
+        return None
+    return detail if isinstance(detail, str) else None
+
+
 class BackendClient:
     def __init__(self, base_url: str, token_provider: Callable[[], Optional[str]]):
         self.base_url = base_url
@@ -59,9 +68,16 @@ class BackendClient:
                 return {"success": False, "error": "Authentication expired. Please log in again."}
             elif response.status_code == 403:
                 return {"success": False, "error": "Trial expired. Please upgrade on the dashboard."}
-                
-            response.raise_for_status()
-            
+            elif response.status_code >= 400:
+                # Anything else the server refused — the monthly allowance used up
+                # or too many actions at once (429), a selection too long (413).
+                # Its message says which, and perform.py turns a quota message into
+                # the upgrade prompt. raise_for_status() used to report all of
+                # these as "Could not connect to server."
+                return {"success": False,
+                        "error": _server_detail(response)
+                        or "The writing service is unavailable. Please try again."}
+
             return response.json()
             
         except requests.exceptions.Timeout:

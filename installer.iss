@@ -55,6 +55,12 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; tree behind, and those stale modules can win over the new single-file exe.
 Type: filesandordirs; Name: "{app}\*"
 
+[UninstallDelete]
+; What the app creates at runtime, which the uninstaller would otherwise leave
+; behind: config.json (the saved sign-in token), the cached CA bundle and the
+; log. Must match CONFIG_DIR / LOG_DIR in main.py.
+Type: filesandordirs; Name: "{localappdata}\{#MyAppName}"
+
 [Files]
 ; Relative to this .iss file — NEVER hardcode a machine-specific path here.
 ;
@@ -75,6 +81,12 @@ Source: "{#SourcePath}\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignorever
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Registry]
+; The app registers itself to start with Windows on every launch (setup_startup()
+; in main.py, value name "Xvoice"). Owning the same value here means uninstalling
+; removes it, instead of leaving a startup entry pointing at a deleted exe.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent

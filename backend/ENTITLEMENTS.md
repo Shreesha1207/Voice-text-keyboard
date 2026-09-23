@@ -79,15 +79,58 @@ Verified per product against the real handlers, not just the flags:
 | Live translation (`PUT /auth/translation`) | `tier` → `dictation_is_paid` |
 | Transcription queue priority | `tier` → `dictation_is_paid` |
 | Unlimited writing actions | `writing_is_paid` |
-| Writing status / daily cap | `writing_is_paid` |
+| Writing status / monthly allowance | `writing_is_paid` |
 | Desktop `dictation_enabled` / `writing_enabled` | the respective flag |
 
-A paid **Dictation** customer gets 100 writing actions a month rather than the
-free tier's 30 — a taste of the other product, deliberately not unlimited and
-not an entitlement to it. This predates the change (it applied to any active
-subscription); it is now scoped to Dictation specifically. If Writing should
-have no allowance at all for Dictation customers, drop that branch in
-`transform._writing_quota_for`.
+The Writing trial allows 30 actions per calendar month. Every writing endpoint
+(`/text/transform`, `/writing/rewrite`, `/writing/record`) counts against that one
+allowance through `transform._claim_writing_action`.
+
+A paid **Dictation** customer on the Writing trial gets 100 writing actions a
+month rather than the trial's 30 — a taste of the other product, deliberately
+not unlimited and not an entitlement to it. It still needs the Writing trial:
+without one (or once it ends) Writing is refused like for anyone else. If
+Writing should have no extra allowance for Dictation customers, drop that branch
+in `transform._writing_quota_for`.
+
+There is no free tier after a trial: dictation stops when the 14-day Dictation
+trial ends, and Writing needs its own trial or a subscription. The pricing cards
+and landing pages say so.
+
+## Billing lifecycle
+
+How a Stripe subscription reaches these columns, and the rules that keep one
+product's events from disturbing another's.
+
+- **Purchase.** Checkout is created by the `create-checkout` edge function.
+  Stripe's `customer.subscription.*` webhooks go to `payments-webhook`, which
+  writes the website's `subscriptions` row and sends **that one subscription** to
+  `/lovable-sync`. (It used to re-send every subscription the customer ever held,
+  so a lapsed one replayed after a new one and overwrote it.)
+- **Which product.** From the price's lookup key (`xvoice_intro_monthly`,
+  `xvoice_writing_monthly`, `xvoice_platform_monthly`), the same in test and
+  live mode. The `STRIPE_*_PRICE_ID` secrets are only a fallback. An unknown
+  price unlocks nothing and fails loudly; it never defaults to Dictation.
+- **Current state, not event state.** The webhook reads the subscription from
+  Stripe before writing, so a late retry of an old event cannot roll it back.
+- **Statuses.** `incomplete` / `incomplete_expired` (never paid) change nothing.
+  `past_due` keeps access while Stripe retries. `unpaid` / `paused` end it.
+  `canceled` grants access until the paid period ends — unless the subscription
+  was ended outright (refund, cancel-now, or Stripe giving up after failed
+  payments), when access ends at that moment.
+- **Superseded subscriptions.** `/lovable-sync` ignores a sync for a different
+  subscription to a product whose current subscription is still active, unless
+  the new one is itself live and runs at least as long.
+- **Cancelling.** The website calls the `cancel-subscription` edge function with
+  the product; it sets `cancel_at_period_end` on that product's subscription, so
+  access continues to the end of the paid period and nothing renews. Railway's
+  `/billing/cancel` remains for older website builds; it needs `product` when the
+  customer holds more than one subscription and never guesses.
+- **Upgrading to Platform.** When a Platform subscription starts, any Dictation or
+  Writing subscription the customer still holds is cancelled immediately and the
+  unused part of its current period refunded. Idempotent under webhook retries.
+- **Desktop app.** Every applied sync pushes `entitlements_updated`, so a running
+  app picks up a purchase or lapse without a restart.
 
 ## Stale rows
 

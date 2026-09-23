@@ -287,14 +287,17 @@ async def validate_status(current_user: User = Depends(get_current_user)):
     allowed = True
     reason = "active"
     trial_remaining = None
-    trial_active = False   # dictation trial active (non-paid user within 14-day window)
+    # Dictation's own 14-day trial, measured from sign-up. Worked out whatever the
+    # account-wide status says: buying Writing sets that to PAID, and used to switch
+    # dictation_enabled off for someone still on their Dictation trial.
+    delta = datetime.now(timezone.utc) - current_user.trial_start_at.replace(tzinfo=timezone.utc)
+    days_used = delta.days
+    trial_active = days_used < 14
 
     if current_user.subscription_status == SubscriptionStatus.PAID:
         allowed = True
         reason = "paid"
     else:
-        delta = datetime.now(timezone.utc) - current_user.trial_start_at.replace(tzinfo=timezone.utc)
-        days_used = delta.days
         if days_used >= 14:
             allowed = False
             reason = "trial_expired"
@@ -303,7 +306,6 @@ async def validate_status(current_user: User = Depends(get_current_user)):
             if current_user.subscription_status != SubscriptionStatus.EXPIRED:
                  current_user.subscription_status = SubscriptionStatus.EXPIRED
         else:
-            trial_active = True
             trial_remaining = 14 - days_used
             reason = "trial_active"
 
@@ -319,6 +321,13 @@ async def validate_status(current_user: User = Depends(get_current_user)):
 
     if writing_enabled or dictation_enabled:
         allowed = True
+
+    # `reason` explains `allowed`. The branch above looks only at the Dictation
+    # trial, so say what actually grants access when something else does — e.g. a
+    # Writing customer whose renewal Stripe is retrying, after the Dictation trial.
+    if reason == "trial_expired" and allowed:
+        reason = ("paid" if current_user.dictation_is_paid or current_user.writing_is_paid
+                  else "writing_trial_active")
 
     return ValidateResponse(
         allowed=allowed,
@@ -341,12 +350,8 @@ async def validate_status(current_user: User = Depends(get_current_user)):
 @router.get("/me", response_model=UserOut)
 async def get_me(current_user: User = Depends(get_current_user)):
     """Get current user profile including writing/dictation entitlements."""
-    from models import SubscriptionStatus as SS
-
-    trial_active = False
-    if current_user.subscription_status not in (SS.PAID, SS.CANCELED):
-        delta = datetime.now(timezone.utc) - current_user.trial_start_at.replace(tzinfo=timezone.utc)
-        trial_active = delta.days < 14
+    # Dictation's own trial, whatever else the account has bought (see validate).
+    trial_active = not current_user.is_trial_expired
 
     is_paid = current_user.tier == "paid"
 

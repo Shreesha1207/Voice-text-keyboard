@@ -14,6 +14,7 @@ from database import get_db
 from models import User, SubscriptionStatus
 from schemas import BillingStatusResponse
 from dependencies import get_current_user
+from user_events import EVENT_ENTITLEMENTS_UPDATED, publish_user_event
 import audit
 
 logger = logging.getLogger(__name__)
@@ -158,6 +159,16 @@ def _mirror_legacy_columns(user) -> None:
         user.subscription_status = SubscriptionStatus.EXPIRED
 
 
+def _replaces_current(status: str, period_end, current_end) -> bool:
+    """May a different subscription in this state take over a product whose
+    current subscription is still active? Only if it is itself live and runs at
+    least as long; anything else (a lapsed or older subscription) would take
+    away access the customer is paying for."""
+    if status != "paid" or not User._sub_active(status, period_end):
+        return False
+    return period_end is None or current_end is None or period_end >= current_end
+
+
 def _product_for_subscription(user, sub_object: dict, subscription_id: str | None) -> str | None:
     """Work out which product a Stripe subscription belongs to.
 
@@ -252,29 +263,27 @@ async def get_product_entitlements(current_user: User = Depends(get_current_user
 
 @router.get("/status", response_model=BillingStatusResponse)
 async def get_billing_status(current_user: User = Depends(get_current_user)):
-    """Get current user's billing/trial status based on the database fields."""
-    
+    """Dictation's billing state — what /billing, the dashboard and the trial
+    banners show for Dictation.
+
+    Decided for Dictation alone. It used to read the account-wide status, so
+    buying Writing made Dictation read as "Pro" to this endpoint and the website
+    showed Dictation as "Free" while its trial was still running.
+    """
     trial_remaining = None
-    next_billing = current_user.current_period_end
-    
-    # Check if they have an active paid subscription
-    if current_user.subscription_status in [SubscriptionStatus.PAID, SubscriptionStatus.CANCELED]:
-        # If canceled but still active, they get access until current_period_end
-        if current_user.subscription_status == SubscriptionStatus.CANCELED:
-            if not next_billing or next_billing < datetime.utcnow():
-                status = SubscriptionStatus.EXPIRED
-                plan_name = "Expired"
-            else:
-                status = SubscriptionStatus.PAID
-                plan_name = "Pro (Canceling)"
-        else:
-            status = SubscriptionStatus.PAID
-            plan_name = "Pro"
-    elif current_user.subscription_status == SubscriptionStatus.PAST_DUE:
-        status = SubscriptionStatus.PAST_DUE
-        plan_name = "Pro (Past Due)"
+    next_billing = None
+
+    if current_user.dictation_is_paid:
+        # An own Dictation subscription, or Platform.
+        source = "dictation" if current_user.dictation_subscription_active else "platform"
+        sub_status = getattr(current_user, f"{source}_sub_status")
+        next_billing = getattr(current_user, f"{source}_period_end") or current_user.current_period_end
+        canceling = sub_status == "canceled" or (
+            sub_status is None and current_user.subscription_status == SubscriptionStatus.CANCELED)
+        status = SubscriptionStatus.PAID
+        plan_name = "Pro (Canceling)" if canceling else "Pro"
     else:
-        # Fall back to trial logic
+        # Dictation's own trial, measured from sign-up.
         delta = datetime.utcnow() - current_user.trial_start_at.replace(tzinfo=None)
         if delta.days < 14:
             trial_remaining = 14 - delta.days
@@ -477,32 +486,48 @@ async def create_billing_portal(
 
 @router.post("/cancel")
 async def cancel_subscription(
+    payload: dict | None = Body(default=None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Cancel at the end of the current billing period.
+    """Cancel one product's subscription at the end of its billing period.
 
-    The web dashboard has always called POST /billing/cancel, but no such route
-    existed — the Cancel button returned 404 and customers could not self-serve a
-    cancellation.
+    The website now cancels through the cancel-subscription edge function; this
+    stays for website builds cached before that change. Body: {"product":
+    "dictation" | "writing" | "platform"}.
+
+    It used to cancel users.stripe_subscription_id — whichever subscription was
+    synced last — so a customer with Dictation and Writing could stop the wrong
+    one. It now cancels the named product's own subscription, and without a
+    product it refuses rather than guess when more than one is active.
 
     This defers to Stripe rather than writing subscription state directly: Stripe
     emits customer.subscription.updated, Lovable's payments-webhook upserts its own
     row and forwards the signed event to /lovable-sync, and the status lands here
-    through the one authoritative path. Setting the flag locally as well would put
-    two writers on the same field again.
+    through the one authoritative path.
     """
-    if not current_user.stripe_subscription_id:
-        raise HTTPException(
-            status_code=400,
-            detail="No active subscription to cancel.",
-        )
+    owned = sorted(p for p in VALID_PLAN_PRODUCTS if getattr(current_user, f"{p}_subscription_active"))
+    product = str((payload or {}).get("product") or "").strip().lower() or None
+    if product is None:
+        if len(owned) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Say which subscription to cancel: {', '.join(owned)}.",
+            )
+        product = owned[0] if owned else None
+    if product not in owned:
+        raise HTTPException(status_code=400, detail="No active subscription to cancel.")
+    # An account the per-product system has not touched yet has only the legacy id.
+    subscription_id = getattr(current_user, f"{product}_sub_id") or (
+        None if current_user.products_migrated else current_user.stripe_subscription_id)
+    if not subscription_id:
+        raise HTTPException(status_code=400, detail="No active subscription to cancel.")
     if not stripe.api_key:
         raise HTTPException(status_code=500, detail="STRIPE_SECRET_KEY not configured")
 
     try:
         subscription = stripe.Subscription.modify(
-            current_user.stripe_subscription_id,
+            subscription_id,
             cancel_at_period_end=True,
         )
     except Exception as e:
@@ -518,7 +543,7 @@ async def cancel_subscription(
     await audit.record(
         db, audit.SUBSCRIPTION_CHANGED, user_id=current_user.id, email=current_user.email,
         detail=f"cancel_at_period_end=True via /billing/cancel "
-               f"(subscription={current_user.stripe_subscription_id})",
+               f"(product={product}, subscription={subscription_id})",
     )
     await db.commit()
 
@@ -580,6 +605,14 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
         )
         return {"status": "ignored", "reason": f"environment={environment} is not live"}
 
+    # A checkout that still needs card authentication (3-D Secure) is first
+    # reported as "incomplete", and one that is abandoned ends "incomplete_expired".
+    # Neither was ever paid, so there is nothing to grant or take away. These got a
+    # 400 before, which made Stripe retry them for days.
+    if status_str in ("incomplete", "incomplete_expired"):
+        logger.info(f"lovable-sync: {status_str!r} for {email!r} ignored; nothing was paid.")
+        return {"status": "ignored", "reason": f"status={status_str} (not paid)"}
+
     # 3. Lookup User
     #    Case-insensitive: emails are stored as the user typed them, and Postgres
     #    compares case-sensitively, so "User@Gmail.com" would otherwise miss a
@@ -614,8 +647,12 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
     # unlock Writing (and a Writing lapse remove Dictation).
     STATUS_MAP = {
         "active": "paid", "trialing": "paid",
-        "past_due": "canceled",          # still inside the paid period
+        "past_due": "canceled",          # Stripe is retrying; access until the period end
+        # The sender sends when access ends, which for a subscription cancelled
+        # outright (refund, failed payments) is when it ended, not its period end.
         "canceled": "canceled", "expired": "expired",
+        # Stripe gave up collecting, or paused the subscription: no access.
+        "unpaid": "expired", "paused": "expired",
     }
     product_status = STATUS_MAP.get(status_str)
     if product_status is None:
@@ -625,12 +662,7 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
         )
         raise HTTPException(status_code=400, detail=f"Unknown status: {status_str}")
 
-    if customer_id := data.get("stripe_customer_id"):
-        user.stripe_customer_id = customer_id
     subscription_id = data.get("stripe_subscription_id") or None
-    if subscription_id:
-        user.stripe_subscription_id = subscription_id
-    user.cancel_at_period_end = data.get("cancel_at_period_end", False)
 
     period_end = data.get("current_period_end")
     end_dt = None
@@ -665,6 +697,36 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
             f"'dictation' for backwards compatibility."
         )
 
+    # A sync for a different subscription to the same product must not take away
+    # access the current one grants. That is what a subscription that lapsed
+    # before the customer re-subscribed looks like, and what a late retry of an
+    # old event looks like. Only a live subscription running at least as long
+    # may replace the current one.
+    current_sub = getattr(user, f"{normalised}_sub_id", None)
+    if (subscription_id and current_sub and subscription_id != current_sub
+            and getattr(user, f"{normalised}_subscription_active")
+            and not _replaces_current(product_status, end_dt,
+                                      getattr(user, f"{normalised}_period_end"))):
+        logger.info(
+            f"lovable-sync: ignoring {status_str!r} for {normalised} subscription "
+            f"{subscription_id}; {current_sub} is the current one and still active."
+        )
+        await audit.record(
+            db, audit.BILLING_SYNC_IGNORED, user_id=user.id, email=user.email, request=request,
+            detail=f"status={status_str} product={normalised} "
+                   f"subscription={subscription_id} (current: {current_sub})",
+            commit=True,
+        )
+        return {"status": "ignored", "reason": "superseded subscription",
+                "product": normalised, "current_subscription": current_sub}
+
+    # Account-wide fields, still read by the legacy fallback and older clients.
+    if customer_id := data.get("stripe_customer_id"):
+        user.stripe_customer_id = customer_id
+    if subscription_id:
+        user.stripe_subscription_id = subscription_id
+    user.cancel_at_period_end = data.get("cancel_at_period_end", False)
+
     apply_product_subscription(user, normalised, product_status, end_dt, subscription_id)
     logger.info(
         f"lovable-sync applied: {email} {normalised}={product_status} "
@@ -681,6 +743,12 @@ async def lovable_sync(request: Request, db: AsyncSession = Depends(get_db)):
                f"platform_active={user.platform_subscription_active}",
     )
     await db.commit()
+
+    # Tell a running desktop app now. It no longer polls, so without this a
+    # purchase (or a lapse) reached it only on its next restart or reconnect.
+    from routers.auth import _desktop_settings
+    await publish_user_event(user.id, EVENT_ENTITLEMENTS_UPDATED, _desktop_settings(user))
+
     # Echo what was actually stored, plus the resulting entitlements. The caller
     # previously got a bare "success" whether or not its plan_product was
     # understood, so a rejected value looked exactly like an accepted one.

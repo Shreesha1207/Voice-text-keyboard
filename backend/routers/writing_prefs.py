@@ -2,9 +2,9 @@
 Writing Engine endpoints.
 
 Endpoints:
-  GET   /api/writing/status          → trial/paid/inactive status + daily cap info
+  GET   /api/writing/status          → trial/paid/inactive status + monthly allowance
   POST  /api/writing/trial/start     → start 14-day free writing trial (idempotent)
-  POST  /api/writing/rewrite         → AI rewrite (enforces 50/day cap for trial)
+  POST  /api/writing/rewrite         → AI rewrite (counts against the trial's monthly allowance)
   GET   /api/writing/preferences     → user's writing preferences (creates row on first call)
   PATCH /api/writing/preferences     → partial update
   PATCH /api/auth/writing-hotkey     → hotkey update
@@ -34,6 +34,7 @@ from dependencies import get_current_user
 from languages import ALL_LANGUAGES, BUILT_IN, MAX_SELECTED, normalise_selection
 from queue_manager import queue_manager
 from rate_limit import limit_by_identity
+from routers.transform import _actions_used_this_month, _claim_writing_action, _writing_quota_for
 from user_events import EVENT_PREFERENCES_UPDATED, publish_user_event
 from models import User, WritingAction, WritingPreferences, SubscriptionStatus
 from schemas import (
@@ -54,7 +55,8 @@ openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", "sk-mock-key"))
 
 MAX_TEXT_CHARS  = 8_000
 TRIAL_DAYS      = 14
-TRIAL_DAILY_CAP = 50   # max rewrites per day for trial users
+# The trial's allowance is 30 actions per calendar month, set by
+# transform.FREE_WRITING_QUOTA and enforced by transform._claim_writing_action.
 
 # How much of the user's text is retained on the WritingAction row. The history view
 # only renders a 120-char snippet, so there is no reason to keep a permanent full
@@ -73,7 +75,8 @@ def _writing_status(user: User) -> dict:
       trial_started_at: ISO str or None
       trial_days_remaining: int (0 for non-trial)
       actions_today: int
-      daily_limit: int | None  (None = unlimited)
+      actions_this_month: int  (what counts against monthly_limit)
+      monthly_limit: int | None  (None = unlimited)
     """
     now = datetime.utcnow()
 
@@ -86,8 +89,13 @@ def _writing_status(user: User) -> dict:
             "trial_started_at": None,
             "trial_days_remaining": 0,
             "actions_today": _today_count(user),
-            "daily_limit": None,   # unlimited
+            "actions_this_month": _actions_used_this_month(user),
+            "monthly_limit": None,   # unlimited
         }
+
+    # The same allowance /text/transform enforces: 30 a month on the trial, or
+    # 100 for a paid Dictation customer.
+    monthly_limit = _writing_quota_for(user)
 
     # Trial started?
     if user.writing_trial_started_at is not None:
@@ -101,7 +109,8 @@ def _writing_status(user: User) -> dict:
                 "trial_started_at": iso_str,
                 "trial_days_remaining": remaining,
                 "actions_today": _today_count(user),
-                "daily_limit": TRIAL_DAILY_CAP,
+                "actions_this_month": _actions_used_this_month(user),
+                "monthly_limit": monthly_limit,
             }
         else:
             return {
@@ -109,7 +118,8 @@ def _writing_status(user: User) -> dict:
                 "trial_started_at": iso_str,
                 "trial_days_remaining": 0,
                 "actions_today": _today_count(user),
-                "daily_limit": TRIAL_DAILY_CAP,
+                "actions_this_month": _actions_used_this_month(user),
+                "monthly_limit": monthly_limit,
             }
 
     # Never started a trial
@@ -118,7 +128,8 @@ def _writing_status(user: User) -> dict:
         "trial_started_at": None,
         "trial_days_remaining": 0,
         "actions_today": 0,
-        "daily_limit": TRIAL_DAILY_CAP,
+        "actions_this_month": 0,
+        "monthly_limit": monthly_limit,
     }
 
 
@@ -142,24 +153,16 @@ def _today_count(user: User) -> int:
 
 
 def _require_writing_access(user: User) -> None:
-    """Raises 402 if user has no active writing entitlement."""
+    """Raises 403 if the user has no active writing entitlement.
+
+    The one check every writing endpoint uses, so they all refuse the same way
+    (this answered 402 while /text/transform answered 403).
+    """
     st = _writing_status(user)
     if st["status"] in ("inactive", "expired"):
         raise HTTPException(
-            status_code=402,
+            status_code=403,
             detail="Writing Engine requires a Writing Pro subscription or an active trial.",
-        )
-
-
-def _enforce_daily_cap(user: User) -> None:
-    """Raises 429 if trial user has hit their daily limit."""
-    st = _writing_status(user)
-    if st["status"] == "paid":
-        return   # unlimited
-    if st["daily_limit"] is not None and _today_count(user) >= st["daily_limit"]:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Daily limit of {st['daily_limit']} rewrites reached. Upgrade to Writing Pro for unlimited access.",
         )
 
 
@@ -267,14 +270,13 @@ async def writing_rewrite(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """AI rewrite — core Writing Engine endpoint. Enforces 50/day cap for trial users."""
-    # Same short-window limit as /text/transform: the daily cap bounds total volume,
-    # this bounds the rate at which it can be spent.
+    """AI rewrite — core Writing Engine endpoint. Counts against the trial's monthly allowance."""
+    # Same short-window limit as /text/transform: the monthly allowance bounds total
+    # volume, this bounds the rate at which it can be spent.
     await limit_by_identity(
         "writing_action", str(current_user.id), limit=20, window_seconds=60
     )
     _require_writing_access(current_user)
-    _enforce_daily_cap(current_user)
 
     if req.action not in _ACTION_PROMPTS:
         raise HTTPException(
@@ -284,6 +286,10 @@ async def writing_rewrite(
 
     if len(req.text) > MAX_TEXT_CHARS:
         raise HTTPException(status_code=413, detail=f"Text exceeds {MAX_TEXT_CHARS} character limit.")
+
+    # Claimed inside this request's transaction, so a rewrite that then fails
+    # is rolled back and does not use up an action.
+    await _claim_writing_action(db, current_user)
 
     system_prompt = _build_prompt(req.action, req.tone, req.language)
 
@@ -333,9 +339,8 @@ async def writing_rewrite(
     )
     db.add(record)
 
-    # Bump counters
+    # The monthly counter was claimed above; only today's count remains.
     _bump_daily_counter(current_user)
-    current_user.writing_actions_this_month += 1
     await db.commit()
     await db.refresh(record)
 
@@ -598,13 +603,12 @@ async def record_writing_action(
     action_name = req.action_key or req.action or "improve"
 
     # This endpoint skipped both gates that every sibling applies, so a user with no
-    # writing entitlement — or one already over their daily cap — could still record
-    # usage against it.
+    # writing entitlement — or one who had used up their monthly allowance — could
+    # still record usage against it.
     _require_writing_access(current_user)
-    _enforce_daily_cap(current_user)
+    await _claim_writing_action(db, current_user)
 
     _bump_daily_counter(current_user)
-    current_user.writing_actions_this_month += 1
 
     record = WritingAction(
         user_id=current_user.id,
@@ -619,10 +623,12 @@ async def record_writing_action(
     await db.commit()
     await db.refresh(record)
 
+    st = _writing_status(current_user)
     return {
         "success": True,
         "daily_used": _today_count(current_user),
-        "daily_limit": _writing_status(current_user)["daily_limit"],
+        "monthly_used": st["actions_this_month"],
+        "monthly_limit": st["monthly_limit"],
     }
 
 
@@ -657,7 +663,8 @@ async def writing_usage(
       actions: [{ key, used }]
       total_this_month: int
       daily_used: int
-      daily_limit: int | None
+      monthly_used: int           ← counted against monthly_limit
+      monthly_limit: int | None   ← None for paid (unlimited)
       weekly: [{ date: "YYYY-MM-DD", count }]  ← last 7 days, oldest first
     """
     now = datetime.now(timezone.utc)
@@ -715,13 +722,14 @@ async def writing_usage(
         for key in _USAGE_ACTION_KEYS
     ]
 
-    # Daily status
+    # Allowance status
     st = _writing_status(current_user)
 
     return {
         "actions":          actions,
         "total_this_month": month_total,
         "daily_used":       st["actions_today"],
-        "daily_limit":      st["daily_limit"],   # None for paid
+        "monthly_used":     st["actions_this_month"],
+        "monthly_limit":    st["monthly_limit"],   # None for paid
         "weekly":           weekly,
     }
